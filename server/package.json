@@ -1,0 +1,11 @@
+{
+  "name": "voice-backend",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}

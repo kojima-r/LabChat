@@ -1,0 +1,17 @@
+voicevox coreのダウンロード
+```
+git clone https://github.com/VOICEVOX/voicevox_core.git
+cd voicevox_core
+```
+ダウンローダとモデルのダウンロード
+```
+export binary=download-linux-x64
+curl -sSfL https://github.com/VOICEVOX/voicevox_core/releases/latest/download/${binary} -o download
+chmod +x download
+./download -o ./example/python --exclude c-api
+./download -o ./example/python --exclude c-api --devices cuda
+```
+python環境のセットアップ
+```
+pip install uvicorn pydantic fastapi psutil semver platformdirs soxr pyopenjtalk kanalizer soundfile pyworld pyyaml jinja2 uv
+```

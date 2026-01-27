@@ -1,0 +1,15 @@
+```
+public/assets/
+```
+に`live2dcubismcore.min.js`
+
+```
+public/assets/models/
+```
+にlive2dモデル
+
+```
+public/assets/models/Haru/Haru.model3.json
+```
+のIdleを空欄にすること
+
