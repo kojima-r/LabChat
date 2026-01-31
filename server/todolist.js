@@ -89,7 +89,7 @@ const todoTools = [
     function: {
       name: "todo_add",
       description:
-        "TODOを追加する。due_atはISO8601(例: 2025-12-14T09:00:00+09:00) または null。",
+        "Add a TODO. due_at must be ISO8601 (e.g., 2025-12-14T09:00:00+09:00) or null.",
       parameters: {
         type: "object",
         properties: {
@@ -105,7 +105,7 @@ const todoTools = [
     type: "function",
     function: {
       name: "todo_list",
-      description: "TODO一覧を取得する（IDも含む）。",
+      description: "Get the TODO list (including IDs).",
       parameters: {
         type: "object",
         properties: {},
@@ -117,7 +117,7 @@ const todoTools = [
     type: "function",
     function: {
       name: "todo_complete",
-      description: "TODOを完了にする。",
+      description: "Mark a TODO as completed.",
       parameters: {
         type: "object",
         properties: { id: { type: "string" } },
@@ -130,7 +130,7 @@ const todoTools = [
     type: "function",
     function: {
       name: "todo_remove",
-      description: "TODOを削除する。",
+      description: "Remove a TODO.",
       parameters: {
         type: "object",
         properties: { id: { type: "string" } },
@@ -143,7 +143,8 @@ const todoTools = [
     type: "function",
     function: {
       name: "todo_update_due",
-      description: "TODOの期限(due_at)を更新する。due_atはISO8601またはnull。",
+      description:
+        "Update a TODO due date (due_at). due_at must be ISO8601 or null.",
       parameters: {
         type: "object",
         properties: {
@@ -164,6 +165,14 @@ function registerTodoRoutes(app) {
     console.log("GET /api/todos", items);
     items.sort((a, b) => (a.due_at ?? "").localeCompare(b.due_at ?? ""));
     res.json({ todos: items });
+  });
+
+  app.post("/api/todo/remove", (req, res) => {
+    const id = String(req.body?.id ?? "");
+    if (!id) return res.status(400).json({ ok: false, error: "missing_id" });
+    const result = tool_todo_remove({ id });
+    if (!result.ok) return res.status(404).json(result);
+    res.json(result);
   });
 }
 

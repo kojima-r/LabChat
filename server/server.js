@@ -2,6 +2,10 @@ import express from "express";
 import { Readable } from "node:stream";
 import { registerTodoRoutes, todoTools, runTodoTool } from "./todolist.js";
 import { pipeline } from "node:stream/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
 const app = express();
 app.use(express.json());
@@ -12,6 +16,72 @@ if (!OPENAI_API_KEY) {
   process.exit(1);
 }
 const PY_TTS_BASE = process.env.PY_TTS_BASE ?? "http://localhost:5005";
+const MCP_PYTHON = process.env.MCP_PYTHON ?? "python";
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const MCP_REFERENCE_SERVER =
+  process.env.MCP_REFERENCE_SERVER ??
+  path.resolve(__dirname, "../mcp/reference_search.py");
+
+let mcpClientPromise = null;
+async function getMcpClient() {
+  if (!mcpClientPromise) {
+    mcpClientPromise = (async () => {
+      const client = new Client({ name: "labchat-backend", version: "1.0.0" });
+      const transport = new StdioClientTransport({
+        command: MCP_PYTHON,
+        args: [MCP_REFERENCE_SERVER],
+      });
+      await client.connect(transport);
+      return client;
+    })();
+  }
+  return mcpClientPromise;
+}
+
+async function callMcpTool(name, args) {
+  const client = await getMcpClient();
+  const result = await client.callTool({ name, arguments: args ?? {} });
+  if (result?.isError) {
+    throw new Error(`MCP tool error: ${name}`);
+  }
+  if (Array.isArray(result?.content)) {
+    for (const item of result.content) {
+      if (item?.type === "json" && item.json !== undefined) return item.json;
+      if (item?.type === "text" && typeof item.text === "string") {
+        try {
+          return JSON.parse(item.text);
+        } catch {
+          return item.text;
+        }
+      }
+    }
+  }
+  return result;
+}
+
+const mcpTools = [
+  {
+    type: "function",
+    function: {
+      name: "search_articles",
+      description: "論文を検索して候補を返す。",
+      parameters: {
+        type: "object",
+        properties: {
+          keywords: { type: "string", description: "部分一致検索キーワード" },
+          criterion: {
+            type: "string",
+            enum: ["year", "score", "cited_count"],
+            description: "ソート基準",
+          },
+          nhits: { type: "integer", minimum: 1, maximum: 50, description: "表示件数" },
+        },
+        required: ["keywords"],
+        additionalProperties: false,
+      },
+    },
+  },
+];
 
 registerTodoRoutes(app); //todolist.js
 
@@ -161,113 +231,25 @@ app.post("/api/tts-stream2", async (req, res) => {
     else res.end();
   }
 });
-/*
-app.post("/api/tts-stream2", async (req, res) => {
-  const startedAt = Date.now();
-  const { text } = req.body ?? {};
-  const style_id = 0;
-  const bitrate = "128k";
 
-  if (!text || !String(text).trim()) {
-    return res.status(400).json({ error: "text is empty" });
-  }
-
-  // ★ クライアントが切断したら upstream も止める
-  const ac = new AbortController();
-  // これが「クライアントがリクエストを途中で中断した」イベント
-  req.on("aborted", () => {
-    ac.abort("client aborted request");
-  });
-
-  // レスポンス側のソケットが閉じた（途中切断の可能性）
-  //    ただし正常終了時にもcloseは来るので、finish済みかチェック
-  res.on("close", () => {
-    if (!res.writableEnded) ac.abort("client disconnected during response");
-  });
-
-  try {
-    console.log("[tts] start len=", String(text).length);
-
-    const r = await fetch(`${PY_TTS_BASE}/tts-stream`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, style_id, bitrate }),
-      //signal: ac.signal,
-    });
-
-    console.log("[tts] upstream headers received in", Date.now() - startedAt, "ms", r.status);
-
-    if (!r.ok) {
-      const err = await r.text();
-      return res.status(500).json({ error: err });
-    }
-    if (!r.body) return res.status(500).json({ error: "No upstream stream body" });
-
-    // ★ 早めにヘッダを確定して flush
-    res.status(200);
-    res.setHeader("Content-Type", "audio/mpeg");
-    res.setHeader("Cache-Control", "no-store");
-    res.setHeader("Connection", "keep-alive");
-    res.setHeader("X-Accel-Buffering", "no"); // nginx 対策（効く構成なら効く）
-    res.flushHeaders?.();
-
-    // ★ backpressure と error をちゃんと伝播
-    await pipeline(Readable.fromWeb(r.body), res);
-
-    console.log("[tts] done in", Date.now() - startedAt, "ms");
-  } catch (e) {
-    console.error("[tts] error", e);
-    if (!res.headersSent) res.status(500).json({ error: String(e) });
-    else res.end();
-  }
-});
-*/
-/*
-app.post("/api/tts-stream2", async (req, res) => {
-  try {
-    const { text } = req.body;
-    //const { text, style_id = 0, bitrate = "128k" } = req.body ?? {};
-    const style_id = 0;
-    const bitrate = "128k";
-    if (!text || !String(text).trim()) {
-      return res.status(400).json({ error: "text is empty" });
-    }
-    console.log(text, style_id, bitrate)
-    const r = await fetch(`${PY_TTS_BASE}/tts-stream`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, style_id, bitrate }),
-    });
-    console.log(r)
-    if (!r.ok) {
-      const err = await r.text();
-      return res.status(500).json({ error: err });
-    }
-
-    // Pythonからの mp3 ストリームをそのまま返す
-    res.setHeader("Content-Type", "audio/mpeg");
-    res.setHeader("Cache-Control", "no-store");
-
-    if (!r.body) return res.status(500).json({ error: "No upstream stream body" });
-
-    Readable.fromWeb(r.body).pipe(res);
-  } catch (e) {
-    res.status(500).json({ error: String(e) });
-  }
-});
-*/
 
 // 2) Chat（APIキーはサーバ側だけ）
 app.post("/api/chat", async (req, res) => {
   try {
-    const { messages } = req.body ?? {};
+    const { messages, isEnglishConversation } = req.body ?? {};
+    const useEnglish = Boolean(isEnglishConversation);
 
     const system = {
       role: "system",
-      content:
-        "あなたは日本語で自然に短めに話す音声アシスタントです。ユーザーの依頼に応じて必要ならツール(todo_*)を呼び出す。"
-        + " due_at は必ず ISO8601(+09:00推奨) か null。"
-        + " 一覧/完了/削除/期限変更はツールを使う。",
+      content: useEnglish
+        ? "You are a voice assistant that speaks naturally and concisely in English. If necessary, you can call tools (todo_*) in response to user requests."
+          + " Use search_articles if you need to search for references."
+          + " due_at must be ISO8601(+09:00) or null."
+          + " Use tools to list/complete/delete/change due dates."
+        : "あなたは日本語で自然に短めに話す音声アシスタントです。ユーザーの依頼に応じて必要ならツール(todo_*)を呼び出す。"
+          + " 参考文献の検索が必要なら search_articles を使う。"
+          + " due_at は必ず ISO8601(+09:00) か null。"
+          + " 一覧/完了/削除/期限変更はツールを使う。",
     };
 
     let convo = [system, ...(messages ?? [])];
@@ -282,7 +264,7 @@ app.post("/api/chat", async (req, res) => {
         body: JSON.stringify({
           model: "gpt-4.1-nano",
           messages: convo,
-          tools: todoTools,
+          tools: [...todoTools, ...mcpTools],
         }),
       });
 
@@ -311,7 +293,14 @@ app.post("/api/chat", async (req, res) => {
           args = {};
         }
 
-        const out = runTodoTool(name, args);
+        let out;
+        if (name?.startsWith("todo_")) {
+          out = runTodoTool(name, args);
+        } else if (name === "search_articles") {
+          out = await callMcpTool(name, args);
+        } else {
+          out = { ok: false, error: "unknown_tool", name };
+        }
 
         convo.push({
           role: "tool",
@@ -321,46 +310,15 @@ app.post("/api/chat", async (req, res) => {
       }
     }
 
-    res.json({ reply: "ツール処理が多いため中断しました。もう一度短く指示してください。" });
-  } catch (e) {
-    res.status(500).json({ error: String(e) });
-  }
-});
-/*
-app.post("/api/chat", async (req, res) => {
-  try {
-    const { messages } = req.body;
-    console.log("Received chat messages:", messages);
-    const r = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "gpt-4.1-nano",
-        messages: [
-          { role: "system", content: "あなたは日本語で自然に短めに話す音声アシスタントです。" },
-          ...(messages ?? []),
-        ],
-      }),
+    res.json({
+      reply: useEnglish
+        ? "Too many tool calls. Please try again with a shorter request."
+        : "ツール処理が多いため中断しました。もう一度短く指示してください。",
     });
-    //console.log("Chat API response status:", r);
-    if (!r.ok) {
-      const t = await r.text();
-      
-      return res.status(500).json({ error: t });
-    }
-
-    const data = await r.json();
-    console.log("Chat API response text:",  data.choices?.[0]?.message?.content);
-    res.json({ reply: data.choices?.[0]?.message?.content ?? "" });
   } catch (e) {
     res.status(500).json({ error: String(e) });
   }
 });
-*/
-
 // 3) TTS（サーバ→mp3を返す）
 app.post("/api/tts", async (req, res) => {
   try {
@@ -396,4 +354,3 @@ app.post("/api/tts", async (req, res) => {
 app.listen(8787, () => {
   console.log("Backend listening on http://localhost:8787");
 });
-

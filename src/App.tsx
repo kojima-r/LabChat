@@ -4,6 +4,8 @@ import TodoPanel from "./components/TodoPanel";
 //import reactLogo from "./assets/react.svg";
 //import viteLogo from "/vite.svg";
 
+const disableLive2D=true
+
 type ChatMessage = {
   id: string;
   role: "user" | "assistant";
@@ -38,6 +40,7 @@ function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const messagesRef = useRef<ChatMessage[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [textInput, setTextInput] = useState("");
 
   const wsRef = useRef<WebSocket | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -52,6 +55,7 @@ function App() {
   const [ClientLive2D, setClientLive2D] = useState<any>(null);
   useEffect(() => {
     // ✅ クライアントでだけサブコンポーネントを読み込む
+    if (disableLive2D) return;
     import("./components/Live2DCanvas.tsx").then(m => setClientLive2D(() => m.default));
   }, []);
 
@@ -83,6 +87,8 @@ function App() {
 
   // TTS ストリーミング再生 ON/OFF
   const [ttsStreamingEnabled, setTtsStreamingEnabled] = useState(true);
+  // Conversation language toggle
+  const [isEnglishConversation, setIsEnglishConversation] = useState(false);
   // turnId -> TTS streaming の create 時刻
   const ttsStreamStartMsRef = useRef<Map<number, number>>(new Map());
 
@@ -173,7 +179,7 @@ function App() {
                 noise_reduction: { type: "near_field" },
                 transcription: {
                   model: "gpt-4o-mini-transcribe",
-                  language: "ja",
+                  language: isEnglishConversation ? "en" : "ja",
                 },
                 turn_detection: {
                   type: "server_vad",
@@ -245,14 +251,14 @@ function App() {
         }
 
         if (msg.type === "error") {
-          setError(msg?.error?.message ?? "Realtime エラー");
+          setError(msg?.error?.message ?? "Realtime error");
         }
       } catch (e) {
         console.error("WS parse error:", e);
       }
     };
 
-    ws.onerror = () => setError("WebSocket エラーが発生しました。");
+    ws.onerror = () => setError("A WebSocket error occurred.");
     wsRef.current = ws;
   };
 
@@ -329,6 +335,29 @@ function App() {
     setAiPhase("idle");
   };
 
+  
+  const sendTextToChat = (text: string) => {　//todolist から呼ばれる
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    const myTurnId = ++turnIdRef.current;
+    latencyByTurnRef.current.set(myTurnId, {});
+    setAiPhase("thinking");
+    void handleUtteranceFinal(trimmed, myTurnId);
+  };
+
+  const submitTextInput = () => {
+    const text = textInput.trim();
+    if (!text) return;
+    setTextInput("");
+    sendTextToChat(text);
+  };
+  const getJstIsoString = (): string => {
+    const now = new Date();
+    // 'sv' ロケールは 'YYYY-MM-DD HH:mm:ss' 形式 (24時間表記)
+    const jstString = now.toLocaleString('sv', { timeZone: 'Asia/Tokyo' });
+    // 空白をTに置換し、タイムゾーン+09:00を付与
+    return jstString.replace(' ', 'T') + '+09:00';
+  };
   const handleUtteranceFinal = async (utterance: string, turnId: number) => {
     try {
       // 既存の chat/tts をキャンセル（新しい発話が来たら古い処理は止める）
@@ -349,7 +378,7 @@ function App() {
       const userMsg: ChatMessage = {
         id: `u-${turnId}`,
         role: "user",
-        content: utterance,
+        content: utterance + " (Current time: " + getJstIsoString() + ")",
         meta: { sttMs: lat0.sttMs },
       };
       setMessages((prev) => {
@@ -415,7 +444,7 @@ function App() {
     } catch (e: any) {
       if (e?.name === "AbortError") return;
       console.error(e);
-      setError("チャット/TTS の処理でエラーが発生しました。");
+      setError("An error occurred during chat/TTS processing.");
       if (turnId === turnIdRef.current && isMicOn) setAiPhase("listening");
     }
   };
@@ -427,6 +456,7 @@ function App() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         messages: history.map(({ role, content }) => ({ role, content })),
+        isEnglishConversation,
       }),
       signal,
     });
@@ -481,7 +511,11 @@ function App() {
             const sb = mediaSource.addSourceBuffer("audio/mpeg");
 
             console.log("TTS stream send:", text);
-            const r = await fetch("/api/tts-stream2", {
+            let endpoint = "/api/tts-stream";
+            if (!isEnglishConversation) {
+              endpoint = "/api/tts-stream2";
+            }
+            const r = await fetch(endpoint, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ text }),
@@ -643,17 +677,40 @@ function App() {
         {ClientLive2D ? <ClientLive2D audioStream={remoteStream} canvasWidth={1200} canvasHeight={1600} left={-100}/> : null}
       </div>
 
-      <h1>Ephemeral Token + Streaming STT → Chat → TTS</h1>
-
       <div className="card" style={{ maxWidth: 720, margin: "0 auto", textAlign: "left" }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 12 }}>
+          <input
+            type="text"
+            value={textInput}
+            placeholder="Type text and send"
+            onChange={(e) => setTextInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                submitTextInput();
+              }
+            }}
+            style={{
+              flex: 1,
+              padding: "8px 10px",
+              borderRadius: 8,
+              border: "1px solid #555",
+              background: "#111",
+              color: "#fff",
+            }}
+          />
+          <button onClick={submitTextInput} disabled={!textInput.trim()}>
+            Send
+          </button>
+        </div>
         <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
           {!isMicOn ? (
-            <button onClick={() => void startMic()}>🎙️ マイク開始</button>
+            <button onClick={() => void startMic()}>🎙️ Start Mic</button>
           ) : (
-            <button onClick={() => void stopMic()}>■ 停止</button>
+            <button onClick={() => void stopMic()}>■ Stop</button>
           )}
           <span style={{ opacity: 0.8 }}>
-            {isMicOn ? "認識中（server_vadで途切れ検知）" : "停止中"}
+            {isMicOn ? "Listening (server_vad detects pauses)" : "Stopped"}
           </span>
           {/* barge-in ON/OFF */}
           <div style={{ marginTop: 12 }}>
@@ -664,7 +721,7 @@ function App() {
                 onChange={(e) => setBargeInEnabled(e.target.checked)}
               />
               <span>
-                発話中に TTS を中断（barge-in）
+                Interrupt TTS while speaking (barge-in)
                 <strong style={{ marginLeft: 6 }}>
                   {bargeInEnabled ? "ON" : "OFF"}
                 </strong>
@@ -680,9 +737,24 @@ function App() {
                 onChange={(e) => setTtsStreamingEnabled(e.target.checked)}
               />
               <span>
-                TTS ストリーミング
+                TTS streaming
                 <strong style={{ marginLeft: 6 }}>
                   {ttsStreamingEnabled ? "ON" : "OFF"}
+                </strong>
+              </span>
+            </label>
+          </div>
+          <div style={{ marginTop: 8 }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <input
+                type="checkbox"
+                checked={isEnglishConversation}
+                onChange={(e) => setIsEnglishConversation(e.target.checked)}
+              />
+              <span>
+                English conversation
+                <strong style={{ marginLeft: 6 }}>
+                  {isEnglishConversation ? "ON" : "OFF"}
                 </strong>
               </span>
             </label>
@@ -690,35 +762,35 @@ function App() {
         </div>
         <div style={{ marginTop: 16, minHeight: 32 }}>
           {aiPhase === "listening" && (
-            <Status label="音声認識中…" />
+            <Status label="Listening…" />
           )}
 
           {aiPhase === "thinking" && (
-            <Status label="AIが返答を考えています…" spinning />
+            <Status label="AI is thinking…" spinning />
           )}
 
           {aiPhase === "speaking" && (
-            <Status label="AIが話しています…" spinning />
+            <Status label="AI is speaking…" spinning />
           )}
         </div>
         {error && (
           <p style={{ color: "red", whiteSpace: "pre-wrap", marginTop: 12 }}>
-            エラー: {error}
+            Error: {error}
           </p>
         )}
 
         <section style={{ marginTop: 18 }}>
-          <h2>partial</h2>
+          <h2>Partial</h2>
           <div style={{ minHeight: 56, padding: 10, border: "1px solid #555", borderRadius: 10, whiteSpace: "pre-wrap" }}>
-            {partial || "（発話待ち）"}
+            {partial || "(waiting for speech)"}
           </div>
         </section>
 
         <section style={{ marginTop: 18 }}>
-          <h2>final（completed）</h2>
+          <h2>Final (completed)</h2>
           <div style={{ maxHeight: 180, overflowY: "auto", padding: 10, border: "1px solid #555", borderRadius: 10 }}>
             {finals.length === 0 ? (
-              <p>（まだありません）</p>
+              <p>(none yet)</p>
             ) : (
               finals.map((t, i) => (
                 <div key={i} style={{ padding: "6px 0", borderBottom: "1px solid #333" }}>
@@ -733,12 +805,12 @@ function App() {
           <h2>Chat</h2>
           <div style={{ maxHeight: 240, overflowY: "auto", padding: 10, border: "1px solid #555", borderRadius: 10, fontSize: "0.9rem" }}>
             {messages.length === 0 ? (
-              <p>（まだありません）</p>
+              <p>(none yet)</p>
             ) : (
               messages.map((m, idx) => (
                 <div key={idx} style={{ marginBottom: 10, textAlign: m.role === "user" ? "right" : "left" }}>
                   <div style={{ display: "inline-block", padding: "8px 10px", borderRadius: 12, background: m.role === "user" ? "#1e88e5" : "#444", color: "#fff", whiteSpace: "pre-wrap", maxWidth: "92%" }}>
-                    <div style={{ fontSize: 12, opacity: 0.8 }}>{m.role === "user" ? "あなた" : "AI"}</div>
+                    <div style={{ fontSize: 12, opacity: 0.8 }}>{m.role === "user" ? "You" : "AI"}</div>
                     {m.content}
                   </div>
                   
@@ -760,7 +832,11 @@ function App() {
           </div>
         </section>
 
-        <TodoPanel refreshKey={todoRefreshKey} />
+        <TodoPanel
+          refreshKey={todoRefreshKey}
+          onDueNotification={(text) => sendTextToChat(text)}
+          isEnglishConversation={isEnglishConversation}
+        />
       </div>
     </>
   );

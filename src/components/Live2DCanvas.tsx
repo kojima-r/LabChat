@@ -128,6 +128,7 @@ export default function Live2DCanvas({
       let model = await Live2DModel.from("assets/models/Haru/Haru.model3.json", { autoUpdate: false }) as Live2DModelLike;
       model.x = left; model.y = top; model.scale.set(scale);
       model.internalModel.motionManager.stopAllMotions();
+      setReady(true);
 
       app.stage.addChild(model);
       appRef.current = app;
@@ -221,6 +222,7 @@ export default function Live2DCanvas({
 
     (async () => {
       await ensureTracks();
+      
       const ctx = (audioCtxRef.current ||= new (window.AudioContext || window.webkitAudioContext!)());
       if (ctx.state !== "running") await ctx.resume();
       
@@ -272,7 +274,7 @@ export default function Live2DCanvas({
   }, [audioStream]);
   
   return (<div>
-	  <div ref={ref} />
-      {!ready && <p style={{opacity:.6}}>Loading Live2D…</p>}
+    {!ready && <p style={{opacity:.6}}>Loading Live2D…</p>}
+	  <div ref={ref} />      
   	</div>);
 }

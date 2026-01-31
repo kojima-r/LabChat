@@ -1,0 +1,6 @@
+conda create -n mcp python=3.11
+conda activate mcp
+
+pip install fastmcp
+pip install crossrefapi
+
