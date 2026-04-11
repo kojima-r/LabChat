@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import "./App.css";
 import TodoPanel from "./components/TodoPanel";
+import type { AvatarMotion } from "./components/Live2DCanvas";
 //import reactLogo from "./assets/react.svg";
 //import viteLogo from "/vite.svg";
 
-const disableLive2D=true
+const disableLive2D=false
 
 type ImageInfo = {
   id: string;
@@ -61,6 +62,8 @@ function App() {
 
   const [remoteStream, setRemoteStream] = useState<MediaStream|null>(null);
   const [displayedImage, setDisplayedImage] = useState<ImageInfo | null>(null);
+  const [avatarMotion, setAvatarMotion] = useState<AvatarMotion | null>(null);
+  const [motionPhase, setMotionPhase] = useState("none");
   const [ClientLive2D, setClientLive2D] = useState<any>(null);
   useEffect(() => {
     // ✅ クライアントでだけサブコンポーネントを読み込む
@@ -411,6 +414,11 @@ function App() {
         setDisplayedImage(chatResult.image);
       }
 
+      // アバター動作
+      if (chatResult.motion) {
+        setAvatarMotion(chatResult.motion);
+      }
+
       // TTS を取りに行く前に speaking 表示（ただしこのターンのみ）
       setPhaseSafely(turnId, "speaking");
 
@@ -466,7 +474,7 @@ function App() {
     }
   };
 
-  const backendChat = async (history: ChatMessage[], signal: AbortSignal): Promise<{ reply: string; image?: ImageInfo }> => {
+  const backendChat = async (history: ChatMessage[], signal: AbortSignal): Promise<{ reply: string; image?: ImageInfo; motion?: AvatarMotion }> => {
     console.log("Sending to backend chat:", history);
     const r = await fetch(`/api/chat`, {
       method: "POST",
@@ -480,7 +488,7 @@ function App() {
     if (!r.ok) throw new Error(await r.text());
     const data = await r.json();
     console.log("Replying to backend chat:", data.reply);
-    return { reply: String(data.reply ?? "").trim(), image: data.image ?? undefined };
+    return { reply: String(data.reply ?? "").trim(), image: data.image ?? undefined, motion: data.motion ?? undefined };
   };
 
   const backendTtsToBlobUrl = async (text: string, signal: AbortSignal) => {
@@ -691,7 +699,7 @@ function App() {
   return (
     <>
       <div>
-        {ClientLive2D ? <ClientLive2D audioStream={remoteStream} canvasWidth={1200} canvasHeight={1600} left={-100}/> : null}
+        {ClientLive2D ? <ClientLive2D audioStream={remoteStream} motion={avatarMotion} onMotionPhaseChange={setMotionPhase} canvasWidth={1200} canvasHeight={1600} left={-100}/> : null}
       </div>
 
       <div className="card" style={{ maxWidth: 720, margin: "0 auto", textAlign: "left" }}>
@@ -789,6 +797,10 @@ function App() {
           {aiPhase === "speaking" && (
             <Status label="AI is speaking…" spinning />
           )}
+
+          <div style={{ marginTop: 6, fontSize: 12, opacity: 0.7 }}>
+            Motion: <strong>{avatarMotion ?? "none"}</strong> | Phase: <strong>{motionPhase}</strong>
+          </div>
         </div>
         {error && (
           <p style={{ color: "red", whiteSpace: "pre-wrap", marginTop: 12 }}>

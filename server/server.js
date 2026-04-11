@@ -133,6 +133,42 @@ const imageTools = [
   },
 ];
 
+// ---- アバター動作ツール ----
+const VALID_MOTIONS = ["neutral", "happy", "sad", "surprised", "thinking", "explaining", "greeting", "nod"];
+
+function runSetAvatarMotion(args) {
+  const { motion } = args;
+  console.log("motion:",motion)
+  if (!VALID_MOTIONS.includes(motion)) {
+    return { ok: false, error: "invalid_motion", motion, valid: VALID_MOTIONS };
+  }
+  return { ok: true, motion };
+}
+
+const avatarTools = [
+  {
+    type: "function",
+    function: {
+      name: "set_avatar_motion",
+      description:
+        "アバターの表情・動作を変更する。会話の内容や雰囲気に合わせて毎回必ず呼び出すこと。"
+        + " 例: 挨拶→greeting、嬉しい話題→happy、悲しい話題→sad、驚き→surprised、考え中→thinking、説明→explaining、同意→nod、通常→neutral",
+      parameters: {
+        type: "object",
+        properties: {
+          motion: {
+            type: "string",
+            enum: VALID_MOTIONS,
+            description: "アバターに設定する動作・表情",
+          },
+        },
+        required: ["motion"],
+        additionalProperties: false,
+      },
+    },
+  },
+];
+
 registerTodoRoutes(app); //todolist.js
 
 // 画像マニフェスト API
@@ -310,16 +346,19 @@ app.post("/api/chat", async (req, res) => {
           + " Use tools to list/complete/delete/change due dates."
           + " When the user asks to show an image, photo, chart, or diagram, call show_image with the appropriate id. Then explain the image using the returned description."
           + "\nAvailable images:\n" + imageListText
+          + "\nIMPORTANT: Always call set_avatar_motion to match the conversation mood. Examples: greeting→greeting, explaining→explaining, happy topic→happy, sad topic→sad, surprised→surprised, agreeing→nod, thinking→thinking."
         : "あなたは日本語で自然に短めに話す音声アシスタントです。ユーザーの依頼に応じて必要ならツール(todo_*)を呼び出す。"
           + " 参考文献の検索が必要なら search_articles を使う。"
           + " due_at は必ず ISO8601(+09:00) か null。"
           + " 一覧/完了/削除/期限変更はツールを使う。"
           + " ユーザーが画像・写真・グラフ・図の表示を求めたら show_image を呼び出し、返された description をもとに説明する。"
-          + "\n利用可能な画像:\n" + imageListText,
+          + "\n利用可能な画像:\n" + imageListText
+          + "\n重要: 毎回必ず set_avatar_motion を呼び出して、会話の雰囲気に合った表情・動作を設定すること。例: 挨拶→greeting、説明→explaining、楽しい→happy、悲しい→sad、驚き→surprised、同意→nod、考え中→thinking。",
     };
 
     let convo = [system, ...(messages ?? [])];
     let shownImage = null; // show_image が呼ばれた場合の画像情報
+    let avatarMotion = null; // set_avatar_motion が呼ばれた場合の動作
 
     for (let i = 0; i < 5; i++) {
       const r = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -331,7 +370,7 @@ app.post("/api/chat", async (req, res) => {
         body: JSON.stringify({
           model: "gpt-4.1-nano",
           messages: convo,
-          tools: [...todoTools, ...mcpTools, ...imageTools],
+          tools: [...todoTools, ...mcpTools, ...imageTools, ...avatarTools],
         }),
       });
 
@@ -345,6 +384,7 @@ app.post("/api/chat", async (req, res) => {
       if (!msg?.tool_calls || msg.tool_calls.length === 0) {
         const result = { reply: msg?.content ?? "" };
         if (shownImage) result.image = shownImage;
+        if (avatarMotion) result.motion = avatarMotion;
         return res.json(result);
       }
 
@@ -377,6 +417,11 @@ app.post("/api/chat", async (req, res) => {
               description: out.description,
             };
           }
+        } else if (name === "set_avatar_motion") {
+          out = runSetAvatarMotion(args);
+          if (out.ok) {
+            avatarMotion = out.motion;
+          }
         } else {
           out = { ok: false, error: "unknown_tool", name };
         }
@@ -395,6 +440,7 @@ app.post("/api/chat", async (req, res) => {
         : "ツール処理が多いため中断しました。もう一度短く指示してください。",
     };
     if (shownImage) result.image = shownImage;
+    if (avatarMotion) result.motion = avatarMotion;
     res.json(result);
   } catch (e) {
     res.status(500).json({ error: String(e) });
