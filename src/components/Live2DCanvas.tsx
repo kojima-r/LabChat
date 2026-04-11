@@ -240,7 +240,8 @@ export default function Live2DCanvas({
 }: Live2DCanvasProps) {
   const ref = useRef<HTMLDivElement | null>(null);
   const didInit = useRef(false);
-  const [ready, setReady] = useState(false);
+  type LoadPhase = "core" | "model" | "done";
+  const [loadPhase, setLoadPhase] = useState<LoadPhase>("core");
 
   const appRef = useRef<PixiApplication | null>(null);
   const modelRef = useRef<Live2DModelLike | null>(null);
@@ -279,10 +280,7 @@ export default function Live2DCanvas({
 
       // ⭐ v7 を読み込み
       const PIXI = await import("pixi.js");
-      //const { Live2DModel } = await import("pixi-live2d-display-lipsyncpatch/cubism4");
       const { Live2DModel } = await import("pixi-live2d-display/cubism4");
-      //const { Live2DModel } = await import("pixi-live2d-display/dist/cubism4.es.js");
-      //const { Live2DModel } = await import("pixi-live2d-display/cubism4");
 
       // ⭐ Ticker を登録（v7は shared を渡す）
       Live2DModel.registerTicker(PIXI.Ticker.shared as any);
@@ -291,15 +289,18 @@ export default function Live2DCanvas({
       app = new PIXI.Application({ width: canvasWidth, height: canvasHeight, backgroundAlpha: 0 });
       ref.current?.appendChild(app.view);
 
-      //model = await Live2DModel.from("assets/models/Hiyori/Hiyori.model3.json");
+      setLoadPhase("model");
+
       // ライブラリの autoUpdate を使わず手動更新で確実に
-      //model = await Live2DModel.from("assets/models/Hiyori/Hiyori.model3.json", { autoUpdate: false });
       let model = await Live2DModel.from("assets/models/Haru/Haru.model3.json", { autoUpdate: false }) as Live2DModelLike;
       model.x = left; model.y = top; model.scale.set(scale);
       model.internalModel.motionManager.stopAllMotions();
-      setReady(true);
 
       app.stage.addChild(model);
+      // 最初の1フレームを描画してからローディングを消す
+      app.render();
+      setLoadPhase("done");
+
       appRef.current = app;
       modelRef.current = model as Live2DModelLike;
       // ====== マウス操作で視線と表情を制御 ======
@@ -557,8 +558,22 @@ export default function Live2DCanvas({
     };
   }, [audioStream]);
   
-  return (<div>
-    {!ready && <p style={{opacity:.6}}>Loading Live2D…</p>}
-	  <div ref={ref} />      
-  	</div>);
+  return (<div style={{ position: "relative" }}>
+    {loadPhase !== "done" && (
+      <p style={{
+        position: "absolute",
+        top: "40%",
+        left: "50%",
+        transform: "translate(-50%, -50%)",
+        opacity: .7,
+        fontSize: "2rem",
+        zIndex: 10,
+        pointerEvents: "none",
+        whiteSpace: "nowrap",
+      }}>
+        {loadPhase === "core" ? "Loading Live2D…" : "Loading model…"}
+      </p>
+    )}
+    <div ref={ref} />
+  </div>);
 }

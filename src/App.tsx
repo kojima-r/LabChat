@@ -64,6 +64,7 @@ function App() {
   const [displayedImage, setDisplayedImage] = useState<ImageInfo | null>(null);
   const [avatarMotion, setAvatarMotion] = useState<AvatarMotion | null>(null);
   const [motionPhase, setMotionPhase] = useState("none");
+  const [panelVisible, setPanelVisible] = useState(true);
   const [ClientLive2D, setClientLive2D] = useState<any>(null);
   useEffect(() => {
     // ✅ クライアントでだけサブコンポーネントを読み込む
@@ -698,11 +699,107 @@ function App() {
 
   return (
     <>
-      <div>
-        {ClientLive2D ? <ClientLive2D audioStream={remoteStream} motion={avatarMotion} onMotionPhaseChange={setMotionPhase} canvasWidth={1200} canvasHeight={1600} left={-100}/> : null}
+      {/* Live2D + 背面画像 レイヤー */}
+      <div style={{ position: "fixed", top: 0, left: 0, width: "100vw", height: "100vh", pointerEvents: "none", zIndex: 0 }}>
+        {/* 背面画像 */}
+        {displayedImage && (
+          <div style={{
+            position: "absolute",
+            top: "50%",
+            right: "5%",
+            transform: "translateY(-50%)",
+            maxWidth: "45vw",
+            maxHeight: "80vh",
+            zIndex: 1,
+          }}>
+            <img
+              src={`/images/${displayedImage.filename}`}
+              alt={displayedImage.title}
+              style={{
+                maxWidth: "100%",
+                maxHeight: "80vh",
+                borderRadius: 12,
+                boxShadow: "0 4px 24px rgba(0,0,0,0.6)",
+                display: "block",
+              }}
+              onError={(e) => {
+                (e.target as HTMLImageElement).style.display = "none";
+              }}
+            />
+            <button
+              onClick={() => setDisplayedImage(null)}
+              style={{
+                position: "absolute",
+                top: 2,
+                right: 2,
+                background: "rgba(0,0,0,0.6)",
+                color: "#fff",
+                border: "none",
+                borderRadius: "50%",
+                width: 32,
+                height: 32,
+                cursor: "pointer",
+                fontSize: 16,
+                pointerEvents: "auto",
+              }}
+            >
+              X
+            </button>
+          </div>
+        )}
+        {/* Live2D アバター（左寄り） */}
+        <div style={{ position: "absolute", bottom: 0, left: 0, zIndex: 2 }}>
+          {ClientLive2D
+            ? <ClientLive2D audioStream={remoteStream} motion={avatarMotion} onMotionPhaseChange={setMotionPhase} canvasWidth={1100} canvasHeight={1200} left={0}/>
+            : !disableLive2D && <p style={{ opacity: .7, fontSize: "2rem", padding: 40 }}>Loading Live2D…</p>
+          }
+        </div>
       </div>
 
-      <div className="card" style={{ maxWidth: 720, margin: "0 auto", textAlign: "left" }}>
+      {/* パネル表示/非表示トグルボタン */}
+      <button
+        onClick={() => setPanelVisible((v) => !v)}
+        style={{
+          position: "fixed",
+          bottom: panelVisible ? "52vh" : 12,
+          left: "50%",
+          transform: "translateX(-50%)",
+          zIndex: 20,
+          background: "#333",
+          color: "#fff",
+          border: "1px solid #555",
+          borderRadius: 20,
+          padding: "6px 20px",
+          cursor: "pointer",
+          fontSize: 14,
+          transition: "bottom 0.4s ease",
+        }}
+      >
+        {panelVisible ? "Panel ▼" : "Panel ▲"}
+      </button>
+
+      <div
+        className="card"
+        style={{
+          maxWidth: 720,
+          margin: "0 auto",
+          textAlign: "left",
+          position: "fixed",
+          bottom: 0,
+          left: "50%",
+          transform: panelVisible ? "translateX(-50%) translateY(0)" : "translateX(-50%) translateY(100%)",
+          transition: "transform 0.4s ease",
+          zIndex: 10,
+          maxHeight: "50vh",
+          overflowY: "auto",
+          width: "95vw",
+          background: "#d0d0d0",
+          color: "#222",
+          borderRadius: "16px 16px 0 0",
+          padding: 16,
+          boxShadow: "0 -4px 20px rgba(0,0,0,0.5)",
+        }}
+      >
         <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 12 }}>
           <input
             type="text"
@@ -878,53 +975,6 @@ function App() {
             )}
           </div>
         </section>
-
-        {/* 画像表示パネル */}
-        {displayedImage && (
-          <section style={{ marginTop: 18 }}>
-            <div style={{
-              position: "relative",
-              border: "1px solid #555",
-              borderRadius: 10,
-              padding: 12,
-              background: "#1a1a1a",
-            }}>
-              <button
-                onClick={() => setDisplayedImage(null)}
-                style={{
-                  position: "absolute",
-                  top: 8,
-                  right: 8,
-                  background: "#333",
-                  color: "#fff",
-                  border: "none",
-                  borderRadius: "50%",
-                  width: 28,
-                  height: 28,
-                  cursor: "pointer",
-                  fontSize: 14,
-                }}
-              >
-                X
-              </button>
-              <h3 style={{ margin: "0 0 8px 0" }}>{displayedImage.title}</h3>
-              <img
-                src={`/images/${displayedImage.filename}`}
-                alt={displayedImage.title}
-                style={{
-                  maxWidth: "100%",
-                  maxHeight: 400,
-                  borderRadius: 8,
-                  display: "block",
-                  margin: "0 auto",
-                }}
-                onError={(e) => {
-                  (e.target as HTMLImageElement).style.display = "none";
-                }}
-              />
-            </div>
-          </section>
-        )}
 
         <TodoPanel
           refreshKey={todoRefreshKey}
