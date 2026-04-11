@@ -6,10 +6,18 @@ import TodoPanel from "./components/TodoPanel";
 
 const disableLive2D=true
 
+type ImageInfo = {
+  id: string;
+  filename: string;
+  title: string;
+  description: string;
+};
+
 type ChatMessage = {
   id: string;
   role: "user" | "assistant";
   content: string;
+  image?: ImageInfo;
   meta?: {
     sttMs?: number;
     chatMs?: number;
@@ -52,6 +60,7 @@ function App() {
   const audioQueueRef = useRef<string[]>([]);
 
   const [remoteStream, setRemoteStream] = useState<MediaStream|null>(null);
+  const [displayedImage, setDisplayedImage] = useState<ImageInfo | null>(null);
   const [ClientLive2D, setClientLive2D] = useState<any>(null);
   useEffect(() => {
     // ✅ クライアントでだけサブコンポーネントを読み込む
@@ -390,11 +399,17 @@ function App() {
       const chatT0 = performance.now();
       // 即時に historyForChat を使うため ref を使う
       historyForChat = [...messagesRef.current, userMsg];
-      const reply = await backendChat(historyForChat, chatAbort.signal);
+      const chatResult = await backendChat(historyForChat, chatAbort.signal);
+      const reply = chatResult.reply;
       const chatMs = Math.round(performance.now() - chatT0);
       // turn が古ければ結果を捨てる（既存のガード）
       if (turnId !== turnIdRef.current) return;
       latencyByTurnRef.current.set(turnId, { ...lat0, chatMs });
+
+      // 画像表示
+      if (chatResult.image) {
+        setDisplayedImage(chatResult.image);
+      }
 
       // TTS を取りに行く前に speaking 表示（ただしこのターンのみ）
       setPhaseSafely(turnId, "speaking");
@@ -406,6 +421,7 @@ function App() {
           id: `a-${turnId}`,
           role: "assistant",
           content: reply,
+          image: chatResult.image,
           meta: { chatMs: lat2.chatMs },// ttsMs はcompletedで入れる
         };
         setMessages((prev) => [...prev, assistantMsg]);
@@ -431,6 +447,7 @@ function App() {
           id: `a-${turnId}`,
           role: "assistant",
           content: reply,
+          image: chatResult.image,
           meta: { chatMs: lat2.chatMs, ttsMs: lat2.ttsMs },
         };
         setMessages((prev) => [...prev, assistantMsg]);
@@ -449,7 +466,7 @@ function App() {
     }
   };
 
-  const backendChat = async (history: ChatMessage[], signal: AbortSignal) => {
+  const backendChat = async (history: ChatMessage[], signal: AbortSignal): Promise<{ reply: string; image?: ImageInfo }> => {
     console.log("Sending to backend chat:", history);
     const r = await fetch(`/api/chat`, {
       method: "POST",
@@ -463,7 +480,7 @@ function App() {
     if (!r.ok) throw new Error(await r.text());
     const data = await r.json();
     console.log("Replying to backend chat:", data.reply);
-    return String(data.reply ?? "").trim();
+    return { reply: String(data.reply ?? "").trim(), image: data.image ?? undefined };
   };
 
   const backendTtsToBlobUrl = async (text: string, signal: AbortSignal) => {
@@ -812,6 +829,24 @@ function App() {
                   <div style={{ display: "inline-block", padding: "8px 10px", borderRadius: 12, background: m.role === "user" ? "#1e88e5" : "#444", color: "#fff", whiteSpace: "pre-wrap", maxWidth: "92%" }}>
                     <div style={{ fontSize: 12, opacity: 0.8 }}>{m.role === "user" ? "You" : "AI"}</div>
                     {m.content}
+                    {m.image && (
+                      <img
+                        src={`/images/${m.image.filename}`}
+                        alt={m.image.title}
+                        style={{
+                          display: "block",
+                          marginTop: 6,
+                          maxWidth: 200,
+                          maxHeight: 150,
+                          borderRadius: 6,
+                          cursor: "pointer",
+                        }}
+                        onClick={() => setDisplayedImage(m.image!)}
+                        onError={(e) => {
+                          (e.target as HTMLImageElement).style.display = "none";
+                        }}
+                      />
+                    )}
                   </div>
                   
                   {m.meta && (
@@ -831,6 +866,53 @@ function App() {
             )}
           </div>
         </section>
+
+        {/* 画像表示パネル */}
+        {displayedImage && (
+          <section style={{ marginTop: 18 }}>
+            <div style={{
+              position: "relative",
+              border: "1px solid #555",
+              borderRadius: 10,
+              padding: 12,
+              background: "#1a1a1a",
+            }}>
+              <button
+                onClick={() => setDisplayedImage(null)}
+                style={{
+                  position: "absolute",
+                  top: 8,
+                  right: 8,
+                  background: "#333",
+                  color: "#fff",
+                  border: "none",
+                  borderRadius: "50%",
+                  width: 28,
+                  height: 28,
+                  cursor: "pointer",
+                  fontSize: 14,
+                }}
+              >
+                X
+              </button>
+              <h3 style={{ margin: "0 0 8px 0" }}>{displayedImage.title}</h3>
+              <img
+                src={`/images/${displayedImage.filename}`}
+                alt={displayedImage.title}
+                style={{
+                  maxWidth: "100%",
+                  maxHeight: 400,
+                  borderRadius: 8,
+                  display: "block",
+                  margin: "0 auto",
+                }}
+                onError={(e) => {
+                  (e.target as HTMLImageElement).style.display = "none";
+                }}
+              />
+            </div>
+          </section>
+        )}
 
         <TodoPanel
           refreshKey={todoRefreshKey}

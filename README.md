@@ -113,6 +113,15 @@ python agents/arxiv_agent/server.py
 
 ブラウザで http://localhost:5173 を開きます。
 
+## 詳細ドキュメント
+
+各コンポーネントの環境構築・起動手順の詳細は以下を参照してください。
+
+- [フロントエンド（React + Vite + Live2D）](docs/setup-frontend.md)
+- [バックエンド（Express API サーバー）](docs/setup-backend.md)
+- [VOICEVOX TTS サーバー](docs/setup-voicevox.md)
+- [研究エージェント & MCP 論文検索サーバー](docs/setup-agents.md)
+
 ## 技術スタック
 
 | レイヤー | 技術 |

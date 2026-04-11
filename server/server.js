@@ -2,6 +2,7 @@ import express from "express";
 import { Readable } from "node:stream";
 import { registerTodoRoutes, todoTools, runTodoTool } from "./todolist.js";
 import { pipeline } from "node:stream/promises";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -83,7 +84,62 @@ const mcpTools = [
   },
 ];
 
+// ---- 画像マニフェスト ----
+const IMAGES_DIR = path.resolve(__dirname, "../public/images");
+const MANIFEST_PATH = path.join(IMAGES_DIR, "manifest.json");
+
+function loadImageManifest() {
+  try {
+    const raw = fs.readFileSync(MANIFEST_PATH, "utf-8");
+    return JSON.parse(raw);
+  } catch {
+    return [];
+  }
+}
+
+function runShowImage(args) {
+  const manifest = loadImageManifest();
+  const { id } = args;
+  const entry = manifest.find((e) => e.id === id);
+  if (!entry) return { ok: false, error: "image_not_found", id };
+  return {
+    ok: true,
+    id: entry.id,
+    filename: entry.filename,
+    title: entry.title,
+    description: entry.description,
+  };
+}
+
+const imageTools = [
+  {
+    type: "function",
+    function: {
+      name: "show_image",
+      description:
+        "画像を画面に表示する。ユーザーが画像・写真・グラフ・図などの表示を要求したとき、適切な id を選んで呼び出す。呼び出すと画像が画面に表示され、description が返されるのでそれをもとにユーザーに説明する。",
+      parameters: {
+        type: "object",
+        properties: {
+          id: {
+            type: "string",
+            description: "表示する画像の id（manifest の id）",
+          },
+        },
+        required: ["id"],
+        additionalProperties: false,
+      },
+    },
+  },
+];
+
 registerTodoRoutes(app); //todolist.js
+
+// 画像マニフェスト API
+app.get("/api/images", (_req, res) => {
+  const manifest = loadImageManifest();
+  res.json({ images: manifest });
+});
 
 
 // 1) エフェメラルトークン発行
@@ -239,6 +295,12 @@ app.post("/api/chat", async (req, res) => {
     const { messages, isEnglishConversation } = req.body ?? {};
     const useEnglish = Boolean(isEnglishConversation);
 
+    // 画像マニフェストからタイトル一覧を生成してシステムプロンプトに埋め込む
+    const manifest = loadImageManifest();
+    const imageListText = manifest.length > 0
+      ? manifest.map((e) => `  - id="${e.id}": ${e.title}`).join("\n")
+      : "(画像なし)";
+
     const system = {
       role: "system",
       content: useEnglish
@@ -246,13 +308,18 @@ app.post("/api/chat", async (req, res) => {
           + " Use search_articles if you need to search for references."
           + " due_at must be ISO8601(+09:00) or null."
           + " Use tools to list/complete/delete/change due dates."
+          + " When the user asks to show an image, photo, chart, or diagram, call show_image with the appropriate id. Then explain the image using the returned description."
+          + "\nAvailable images:\n" + imageListText
         : "あなたは日本語で自然に短めに話す音声アシスタントです。ユーザーの依頼に応じて必要ならツール(todo_*)を呼び出す。"
           + " 参考文献の検索が必要なら search_articles を使う。"
           + " due_at は必ず ISO8601(+09:00) か null。"
-          + " 一覧/完了/削除/期限変更はツールを使う。",
+          + " 一覧/完了/削除/期限変更はツールを使う。"
+          + " ユーザーが画像・写真・グラフ・図の表示を求めたら show_image を呼び出し、返された description をもとに説明する。"
+          + "\n利用可能な画像:\n" + imageListText,
     };
 
     let convo = [system, ...(messages ?? [])];
+    let shownImage = null; // show_image が呼ばれた場合の画像情報
 
     for (let i = 0; i < 5; i++) {
       const r = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -264,7 +331,7 @@ app.post("/api/chat", async (req, res) => {
         body: JSON.stringify({
           model: "gpt-4.1-nano",
           messages: convo,
-          tools: [...todoTools, ...mcpTools],
+          tools: [...todoTools, ...mcpTools, ...imageTools],
         }),
       });
 
@@ -276,7 +343,9 @@ app.post("/api/chat", async (req, res) => {
 
       // no tool calls => final
       if (!msg?.tool_calls || msg.tool_calls.length === 0) {
-        return res.json({ reply: msg?.content ?? "" });
+        const result = { reply: msg?.content ?? "" };
+        if (shownImage) result.image = shownImage;
+        return res.json(result);
       }
 
       // add assistant message with tool_calls
@@ -298,6 +367,16 @@ app.post("/api/chat", async (req, res) => {
           out = runTodoTool(name, args);
         } else if (name === "search_articles") {
           out = await callMcpTool(name, args);
+        } else if (name === "show_image") {
+          out = runShowImage(args);
+          if (out.ok) {
+            shownImage = {
+              id: out.id,
+              filename: out.filename,
+              title: out.title,
+              description: out.description,
+            };
+          }
         } else {
           out = { ok: false, error: "unknown_tool", name };
         }
@@ -310,11 +389,13 @@ app.post("/api/chat", async (req, res) => {
       }
     }
 
-    res.json({
+    const result = {
       reply: useEnglish
         ? "Too many tool calls. Please try again with a shorter request."
         : "ツール処理が多いため中断しました。もう一度短く指示してください。",
-    });
+    };
+    if (shownImage) result.image = shownImage;
+    res.json(result);
   } catch (e) {
     res.status(500).json({ error: String(e) });
   }
