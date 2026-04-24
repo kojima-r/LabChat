@@ -102,6 +102,8 @@ function App() {
   const [ttsStreamingEnabled, setTtsStreamingEnabled] = useState(true);
   // Conversation language toggle
   const [isEnglishConversation, setIsEnglishConversation] = useState(false);
+  // 字幕表示 ON/OFF
+  const [subtitleEnabled, setSubtitleEnabled] = useState(true);
   // turnId -> TTS streaming の create 時刻
   const ttsStreamStartMsRef = useRef<Map<number, number>>(new Map());
 
@@ -697,8 +699,72 @@ function App() {
     }
   };
 
+  const latestUserSubtitle =
+    partial.trim() ||
+    [...messages].reverse().find((m) => m.role === "user")?.content ||
+    "";
+  const latestAssistantSubtitle =
+    [...messages].reverse().find((m) => m.role === "assistant")?.content || "";
+
   return (
     <>
+      {/* 字幕オーバーレイ */}
+      {subtitleEnabled && (latestUserSubtitle || latestAssistantSubtitle) && (
+        <div
+          style={{
+            position: "fixed",
+            bottom: panelVisible ? "calc(50vh + 16px)" : 60,
+            left: "50%",
+            transform: "translateX(-50%)",
+            zIndex: 30,
+            width: "min(90vw, 1000px)",
+            display: "flex",
+            flexDirection: "column",
+            gap: 8,
+            pointerEvents: "none",
+            textAlign: "center",
+            transition: "bottom 0.4s ease",
+          }}
+        >
+          {latestAssistantSubtitle && (
+            <div
+              style={{
+                background: "rgba(0, 0, 0, 0.65)",
+                color: "#ffe98a",
+                padding: "10px 18px",
+                borderRadius: 10,
+                fontSize: "1.4rem",
+                fontWeight: 600,
+                lineHeight: 1.4,
+                textShadow: "0 2px 4px rgba(0,0,0,0.8)",
+                whiteSpace: "pre-wrap",
+              }}
+            >
+              <span style={{ opacity: 0.75, fontSize: "0.85rem", marginRight: 8 }}>AI</span>
+              {latestAssistantSubtitle}
+            </div>
+          )}
+          {latestUserSubtitle && (
+            <div
+              style={{
+                background: "rgba(0, 0, 0, 0.65)",
+                color: "#ffffff",
+                padding: "10px 18px",
+                borderRadius: 10,
+                fontSize: "1.4rem",
+                fontWeight: 600,
+                lineHeight: 1.4,
+                textShadow: "0 2px 4px rgba(0,0,0,0.8)",
+                whiteSpace: "pre-wrap",
+              }}
+            >
+              <span style={{ opacity: 0.75, fontSize: "0.85rem", marginRight: 8 }}>You</span>
+              {latestUserSubtitle.replace(/\s*\(Current time:[^)]*\)\s*$/, "")}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Live2D + 背面画像 レイヤー */}
       <div style={{ position: "fixed", top: 0, left: 0, width: "100vw", height: "100vh", pointerEvents: "none", zIndex: 0 }}>
         {/* 背面画像 */}
@@ -877,6 +943,22 @@ function App() {
                 English conversation
                 <strong style={{ marginLeft: 6 }}>
                   {isEnglishConversation ? "ON" : "OFF"}
+                </strong>
+              </span>
+            </label>
+          </div>
+          {/* 字幕表示 ON/OFF */}
+          <div style={{ marginTop: 8 }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <input
+                type="checkbox"
+                checked={subtitleEnabled}
+                onChange={(e) => setSubtitleEnabled(e.target.checked)}
+              />
+              <span>
+                Subtitles
+                <strong style={{ marginLeft: 6 }}>
+                  {subtitleEnabled ? "ON" : "OFF"}
                 </strong>
               </span>
             </label>
