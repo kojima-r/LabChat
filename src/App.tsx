@@ -104,6 +104,8 @@ function App() {
   const [isEnglishConversation, setIsEnglishConversation] = useState(false);
   // 字幕表示 ON/OFF
   const [subtitleEnabled, setSubtitleEnabled] = useState(true);
+  // 字幕フォントサイズ（rem）
+  const [subtitleFontSize, setSubtitleFontSize] = useState(1.4);
   // turnId -> TTS streaming の create 時刻
   const ttsStreamStartMsRef = useRef<Map<number, number>>(new Map());
 
@@ -699,12 +701,28 @@ function App() {
     }
   };
 
+  const latestUserIndex = (() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === "user") return i;
+    }
+    return -1;
+  })();
+  const latestAssistantIndex = (() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === "assistant") return i;
+    }
+    return -1;
+  })();
   const latestUserSubtitle =
     partial.trim() ||
-    [...messages].reverse().find((m) => m.role === "user")?.content ||
+    (latestUserIndex >= 0 ? messages[latestUserIndex].content : "") ||
     "";
   const latestAssistantSubtitle =
-    [...messages].reverse().find((m) => m.role === "assistant")?.content || "";
+    latestAssistantIndex >= 0 ? messages[latestAssistantIndex].content : "";
+  // 新しい発話を下に表示する（partial があればユーザーが最新）
+  const userIsNewer = partial.trim()
+    ? true
+    : latestUserIndex > latestAssistantIndex;
 
   return (
     <>
@@ -726,42 +744,49 @@ function App() {
             transition: "bottom 0.4s ease",
           }}
         >
-          {latestAssistantSubtitle && (
-            <div
-              style={{
-                background: "rgba(0, 0, 0, 0.65)",
-                color: "#ffe98a",
-                padding: "10px 18px",
-                borderRadius: 10,
-                fontSize: "1.4rem",
-                fontWeight: 600,
-                lineHeight: 1.4,
-                textShadow: "0 2px 4px rgba(0,0,0,0.8)",
-                whiteSpace: "pre-wrap",
-              }}
-            >
-              <span style={{ opacity: 0.75, fontSize: "0.85rem", marginRight: 8 }}>AI</span>
-              {latestAssistantSubtitle}
-            </div>
-          )}
-          {latestUserSubtitle && (
-            <div
-              style={{
-                background: "rgba(0, 0, 0, 0.65)",
-                color: "#ffffff",
-                padding: "10px 18px",
-                borderRadius: 10,
-                fontSize: "1.4rem",
-                fontWeight: 600,
-                lineHeight: 1.4,
-                textShadow: "0 2px 4px rgba(0,0,0,0.8)",
-                whiteSpace: "pre-wrap",
-              }}
-            >
-              <span style={{ opacity: 0.75, fontSize: "0.85rem", marginRight: 8 }}>You</span>
-              {latestUserSubtitle.replace(/\s*\(Current time:[^)]*\)\s*$/, "")}
-            </div>
-          )}
+          {(() => {
+            const assistantBlock = latestAssistantSubtitle ? (
+              <div
+                key="assistant"
+                style={{
+                  background: "rgba(0, 0, 0, 0.65)",
+                  color: "#ffe98a",
+                  padding: "10px 18px",
+                  borderRadius: 10,
+                  fontSize: `${subtitleFontSize}rem`,
+                  fontWeight: 600,
+                  lineHeight: 1.4,
+                  textShadow: "0 2px 4px rgba(0,0,0,0.8)",
+                  whiteSpace: "pre-wrap",
+                }}
+              >
+                <span style={{ opacity: 0.75, fontSize: "0.85rem", marginRight: 8 }}>AI</span>
+                {latestAssistantSubtitle}
+              </div>
+            ) : null;
+            const userBlock = latestUserSubtitle ? (
+              <div
+                key="user"
+                style={{
+                  background: "rgba(0, 0, 0, 0.65)",
+                  color: "#ffffff",
+                  padding: "10px 18px",
+                  borderRadius: 10,
+                  fontSize: `${subtitleFontSize}rem`,
+                  fontWeight: 600,
+                  lineHeight: 1.4,
+                  textShadow: "0 2px 4px rgba(0,0,0,0.8)",
+                  whiteSpace: "pre-wrap",
+                }}
+              >
+                <span style={{ opacity: 0.75, fontSize: "0.85rem", marginRight: 8 }}>You</span>
+                {latestUserSubtitle.replace(/\s*\(Current time:[^)]*\)\s*$/, "")}
+              </div>
+            ) : null;
+            return userIsNewer
+              ? [assistantBlock, userBlock]
+              : [userBlock, assistantBlock];
+          })()}
         </div>
       )}
 
@@ -961,6 +986,22 @@ function App() {
                   {subtitleEnabled ? "ON" : "OFF"}
                 </strong>
               </span>
+            </label>
+          </div>
+          {/* 字幕フォントサイズ */}
+          <div style={{ marginTop: 8 }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span>Subtitle size</span>
+              <input
+                type="range"
+                min={0.8}
+                max={3}
+                step={0.1}
+                value={subtitleFontSize}
+                onChange={(e) => setSubtitleFontSize(parseFloat(e.target.value))}
+                disabled={!subtitleEnabled}
+              />
+              <strong>{subtitleFontSize.toFixed(1)}rem</strong>
             </label>
           </div>
         </div>
