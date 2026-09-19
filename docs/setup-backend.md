@@ -93,7 +93,7 @@ Tool Calling で以下のツールが自動実行されます:
 |---|---|---|
 | POST | `/api/tts` | OpenAI TTS（バッチ、MP3 バイナリ返却） |
 | POST | `/api/tts-stream` | OpenAI TTS（ストリーミング、英語用） |
-| POST | `/api/tts-stream2` | VOICEVOX TTS（ストリーミング、日本語用） |
+| POST | `/api/tts-stream2` | VOICEVOX TTS（ストリーミング、日本語用）。`X-Vowel-Timeline` ヘッダでモーラ情報も返す |
 
 リクエストボディ（共通）:
 
@@ -104,6 +104,10 @@ Tool Calling で以下のツールが自動実行されます:
 ```
 
 `/api/tts-stream2` は VOICEVOX サーバー（`PY_TTS_BASE`）にプロキシします。
+音声ストリームに加えて、上流の `X-Vowel-Timeline`（母音タイムライン、base64 の JSON）を
+そのまま通します。フロントエンドはこれで母音ベースのリップシンクを行い、ヘッダが無い場合は
+音量のみのリップシンクにフォールバックします（詳細は
+[VOICEVOX ガイド](./setup-voicevox.md)）。
 日本語 TTS を使う場合は [VOICEVOX サーバー](./setup-voicevox.md)を先に起動してください。
 
 ### TODO 管理

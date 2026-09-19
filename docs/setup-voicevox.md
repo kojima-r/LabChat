@@ -111,8 +111,11 @@ GET /health
 レスポンス:
 
 ```json
-{"ok": true, "mode": "AUTO", "vvm": "./model.vvm"}
+{"ok": true, "mode": "AUTO", "vvm": "./model.vvm", "features": ["vowel-timeline"]}
 ```
+
+`features` に `vowel-timeline` が無ければ、母音タイムラインに未対応の**古いプロセス**が
+応答しています（合成せずに確認できるので、まずここを見てください）。
 
 ### 音声合成（ストリーミング）
 
@@ -139,16 +142,53 @@ Content-Type: application/json
 
 レスポンス: `audio/mpeg`（chunked ストリーミング）
 
+レスポンスヘッダ:
+
+| ヘッダ | 説明 |
+|---|---|
+| `X-Vowel-Timeline` | 母音タイムライン（base64 の JSON）。口の形をこれで作る |
+
+### 母音タイムライン（リップシンク用）
+
+`audio_query` のモーラ情報から「どの母音が何秒から何秒まで鳴るか」を組み立てて返します。
+フロントエンドはこれで `ParamMouthForm`（口の変形）と `ParamMouthOpenY`（口の開閉）を
+決めます。音声本体はストリームなので本文には載せられず、また音声と1対1で対応させたい
+（barge-in で中断したら一緒に捨てたい）ので**ヘッダ**に載せています。
+
+デコード後の JSON:
+
+```json
+{"t0": 0.1, "v": "o,N,i,i,a,pau,a,o,e,u", "d": [0.15, 0.07, 0.13, 0.13, 0.15, 0.25, 0.14, 0.13, 0.11, 0.16]}
+```
+
+| フィールド | 説明 |
+|---|---|
+| `t0` | 先頭の無音時間（秒）。`pre_phoneme_length / speed_scale` |
+| `v` | モーラごとの母音をカンマ区切りにしたもの。`pau` は休符、`N`=ん、`cl`=っ |
+| `d` | 各モーラの尺（秒）。子音の時間は母音に畳み込んである |
+
+開始・終了時刻はフロント側で `d` を積算して求めます（`src/cubism/vowelMouth.ts`)。
+母音表に無いもの（`N` / `cl` / `pau`）は「休みの口」になります。
+
+中身だけ確認したいときは合成せずに取れる debug 用エンドポイントがあります:
+
+```bash
+curl -s localhost:5005/audio-query-timeline \
+  -H 'Content-Type: application/json' -d '{"text":"こんにちは、ラボです"}' | jq
+```
+
 ### 処理の流れ
 
 ```
-テキスト → VOICEVOX (audio_query → synthesis) → WAV → ffmpeg → MP3 ストリーム
+テキスト → VOICEVOX audio_query ─┬→ 母音タイムライン → X-Vowel-Timeline ヘッダ
+                                 └→ synthesis → WAV → ffmpeg → MP3 ストリーム
 ```
 
 1. VOICEVOX Core でテキストから音声クエリを生成
-2. 音声クエリから WAV バイナリを合成
-3. ffmpeg パイプラインで WAV → MP3 に変換
-4. 64KB チャンク単位でストリーミング返却
+2. **音声クエリのモーラ情報から母音タイムラインを作る（合成を待たない）**
+3. 音声クエリから WAV バイナリを合成
+4. ffmpeg パイプラインで WAV → MP3 に変換
+5. 64KB チャンク単位でストリーミング返却
 
 ## トラブルシューティング
 
@@ -158,4 +198,7 @@ Content-Type: application/json
 | Open JTalk 辞書エラー | `OPENJTALK_DICT_DIR` のパスを確認。辞書は UTF-8 版を使用 |
 | ONNX Runtime ロードエラー | `ONNXRUNTIME_LIB` で正しいライブラリパスを指定 |
 | `ffmpeg: command not found` | ffmpeg をインストール |
+| 口が音量だけで開閉する（母音の形にならない） | ブラウザのコンソールの `[tts] 母音タイムラインなし` の **原因** 行が原因を名指しします。`curl -s localhost:5005/health` の `features` に `vowel-timeline` が無ければ古いプロセスです |
+| `/audio-query-timeline` が 500 を返す | 応答 JSON の `traceback` に原因が入っています。`voicevox_core` はバージョンによって `pause_mora` を dict で返す等の非一貫があるため、フィールドの読み方を `_field()` で吸収しています |
+| 再起動したのに古いままと言われる | uvicorn がポートを取れず `Address already in use` で終了し、古いプロセスが応答し続けています。`ss -lptn 'sport = :5005'` で掴んでいる PID を確認して終了させてください。正常起動時は `[tts_server] 起動完了 features=vowel-timeline` のバナーが出ます |
 | MP3 出力が途切れる | ffmpeg のバージョンを確認。`libmp3lame` コーデックが必要 |

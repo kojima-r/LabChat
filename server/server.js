@@ -133,8 +133,11 @@ const imageTools = [
   },
 ];
 
-// ---- アバター動作ツール ----
+// ---- アバター動作・表情ツール ----
+// この2つの語彙は src/components/live2dModels.ts の AvatarMotion / AvatarExpression と
+// 対応している（モデルごとのモーション/exp3 への割り当てはフロント側が持つ）。
 const VALID_MOTIONS = ["neutral", "happy", "sad", "surprised", "thinking", "explaining", "greeting", "nod"];
+const VALID_EXPRESSIONS = ["neutral", "joy", "anger", "sorrow", "fun", "surprised", "shy", "troubled"];
 
 function runSetAvatarMotion(args) {
   const { motion } = args;
@@ -143,6 +146,15 @@ function runSetAvatarMotion(args) {
     return { ok: false, error: "invalid_motion", motion, valid: VALID_MOTIONS };
   }
   return { ok: true, motion };
+}
+
+function runSetAvatarExpression(args) {
+  const { expression } = args;
+  console.log("expression:", expression)
+  if (!VALID_EXPRESSIONS.includes(expression)) {
+    return { ok: false, error: "invalid_expression", expression, valid: VALID_EXPRESSIONS };
+  }
+  return { ok: true, expression };
 }
 
 const avatarTools = [
@@ -159,10 +171,31 @@ const avatarTools = [
           motion: {
             type: "string",
             enum: VALID_MOTIONS,
-            description: "アバターに設定する動作・表情",
+            description: "アバターに設定する動作",
           },
         },
         required: ["motion"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "set_avatar_expression",
+      description:
+        "アバターの顔の表情を変更する。動作(set_avatar_motion)とは別のレイヤーで、話している間ずっと保持される。会話の感情に合わせて毎回必ず呼び出すこと。"
+        + " 例: 通常→neutral、喜び→joy、怒り→anger、哀しみ→sorrow、楽しい→fun、驚き→surprised、照れ→shy、困り→troubled",
+      parameters: {
+        type: "object",
+        properties: {
+          expression: {
+            type: "string",
+            enum: VALID_EXPRESSIONS,
+            description: "アバターに設定する表情",
+          },
+        },
+        required: ["expression"],
         additionalProperties: false,
       },
     },
@@ -286,6 +319,37 @@ app.post("/api/tts-stream2", async (req, res) => {
     res.setHeader("Content-Type", "audio/mpeg");
     res.setHeader("Cache-Control", "no-store");
     res.setHeader("X-Accel-Buffering", "no");
+    // このプロセスが母音タイムラインの転送に対応していることを示す目印。
+    // 変更前の古いプロセスが残って応答していると、これが無いのでブラウザ側から判別できる
+    // （実際に EADDRINUSE で古い Express が居座り、ヘッダが付かない事例があった）。
+    res.setHeader("X-Tts-Features", "vowel-timeline");
+    // 口の形のための母音タイムライン（base64(JSON)）をそのまま通す。
+    // 音声はストリームなので本文には載せられず、かつ音声と1対1で対応させたいのでヘッダに乗せる。
+    // barge-in で中断すればタイムラインも一緒に捨てられる。
+    const vowelTimeline = r.headers.get("x-vowel-timeline");
+    // VOICEVOX 側も対応の目印を返す。これで「古い VOICEVOX」と
+    // 「新しいがタイムライン生成に失敗」を区別できる。
+    const upstreamFeatures = r.headers.get("x-tts-server-features");
+    if (upstreamFeatures) res.setHeader("X-Tts-Server-Features", upstreamFeatures);
+    if (vowelTimeline) {
+      res.setHeader("X-Vowel-Timeline", vowelTimeline);
+      console.log("[tts] vowel timeline", vowelTimeline.length, "chars (base64)");
+    } else if (!upstreamFeatures) {
+      console.log(
+        `[tts] vowel timeline なし: VOICEVOX (${PY_TTS_BASE}) が古いプロセスです。` +
+          `再起動してください。上流の応答ヘッダ: ${[...r.headers.keys()].join(", ")}`,
+      );
+    } else {
+      console.log(
+        "[tts] vowel timeline なし: VOICEVOX は対応版ですが生成に失敗しています。" +
+          "VOICEVOX 側のログのトレースバックを確認してください。",
+      );
+    }
+    // 同一オリジンなら不要だが、API を別オリジンに置いた場合でも fetch から読めるように
+    res.setHeader(
+      "Access-Control-Expose-Headers",
+      "X-Vowel-Timeline, X-Tts-Features, X-Tts-Server-Features",
+    );
     res.flushHeaders?.();
 
     const upstream = Readable.fromWeb(r.body);
@@ -347,18 +411,21 @@ app.post("/api/chat", async (req, res) => {
           + " When the user asks to show an image, photo, chart, or diagram, call show_image with the appropriate id. Then explain the image using the returned description."
           + "\nAvailable images:\n" + imageListText
           + "\nIMPORTANT: Always call set_avatar_motion to match the conversation mood. Examples: greeting→greeting, explaining→explaining, happy topic→happy, sad topic→sad, surprised→surprised, agreeing→nod, thinking→thinking."
+          + "\nIMPORTANT: Also always call set_avatar_expression for the facial expression, which is a separate layer that is held while you speak. Examples: joy→joy, anger→anger, sorrow→sorrow, fun→fun, surprise→surprised, embarrassed→shy, troubled→troubled, otherwise→neutral."
         : "あなたは日本語で自然に短めに話す音声アシスタントです。ユーザーの依頼に応じて必要ならツール(todo_*)を呼び出す。"
           + " 参考文献の検索が必要なら search_articles を使う。"
           + " due_at は必ず ISO8601(+09:00) か null。"
           + " 一覧/完了/削除/期限変更はツールを使う。"
           + " ユーザーが画像・写真・グラフ・図の表示を求めたら show_image を呼び出し、返された description をもとに説明する。"
           + "\n利用可能な画像:\n" + imageListText
-          + "\n重要: 毎回必ず set_avatar_motion を呼び出して、会話の雰囲気に合った表情・動作を設定すること。例: 挨拶→greeting、説明→explaining、楽しい→happy、悲しい→sad、驚き→surprised、同意→nod、考え中→thinking。",
+          + "\n重要: 毎回必ず set_avatar_motion を呼び出して、会話の雰囲気に合った動作を設定すること。例: 挨拶→greeting、説明→explaining、楽しい→happy、悲しい→sad、驚き→surprised、同意→nod、考え中→thinking。"
+          + "\n重要: 併せて毎回必ず set_avatar_expression を呼び出して顔の表情を設定すること。表情は動作とは別のレイヤーで、話している間ずっと保持される。例: 喜び→joy、怒り→anger、哀しみ→sorrow、楽しい→fun、驚き→surprised、照れ→shy、困り→troubled、それ以外→neutral。",
     };
 
     let convo = [system, ...(messages ?? [])];
     let shownImage = null; // show_image が呼ばれた場合の画像情報
     let avatarMotion = null; // set_avatar_motion が呼ばれた場合の動作
+    let avatarExpression = null; // set_avatar_expression が呼ばれた場合の表情
 
     for (let i = 0; i < 5; i++) {
       const r = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -385,6 +452,7 @@ app.post("/api/chat", async (req, res) => {
         const result = { reply: msg?.content ?? "" };
         if (shownImage) result.image = shownImage;
         if (avatarMotion) result.motion = avatarMotion;
+        if (avatarExpression) result.expression = avatarExpression;
         return res.json(result);
       }
 
@@ -422,6 +490,11 @@ app.post("/api/chat", async (req, res) => {
           if (out.ok) {
             avatarMotion = out.motion;
           }
+        } else if (name === "set_avatar_expression") {
+          out = runSetAvatarExpression(args);
+          if (out.ok) {
+            avatarExpression = out.expression;
+          }
         } else {
           out = { ok: false, error: "unknown_tool", name };
         }
@@ -441,6 +514,7 @@ app.post("/api/chat", async (req, res) => {
     };
     if (shownImage) result.image = shownImage;
     if (avatarMotion) result.motion = avatarMotion;
+    if (avatarExpression) result.expression = avatarExpression;
     res.json(result);
   } catch (e) {
     res.status(500).json({ error: String(e) });

@@ -1,11 +1,29 @@
 import { useEffect, useRef, useState } from "react";
 import "./App.css";
 import TodoPanel from "./components/TodoPanel";
-import type { AvatarMotion } from "./components/Live2DCanvas";
+import { decodeVowelTimelineHeader } from "./cubism/vowelMouth";
+import type { LipSyncTimeline } from "./components/Live2DCanvas";
+import {
+  AVATAR_EXPRESSIONS,
+  AVATAR_MODELS,
+  AVATAR_MOTIONS,
+  DEFAULT_MODEL_ID,
+  defaultFormOf,
+  getModelConfig,
+  type AvatarExpression,
+  type AvatarMotion,
+} from "./components/live2dModels";
 //import reactLogo from "./assets/react.svg";
 //import viteLogo from "/vite.svg";
 
 const disableLive2D=false
+
+// 起動の内訳を測るためのログ。時刻の起点は performance.now() の原点（ページ読み込み開始）で、
+// Live2DCanvas の [Live2D +Ns] と同じ物差しなので前後がそのまま繋がる。
+function boot(msg: string) {
+  console.log(`[Boot +${(performance.now() / 1000).toFixed(2)}s] ${msg}`);
+}
+boot("App.tsx 評価");
 
 type ImageInfo = {
   id: string;
@@ -61,15 +79,31 @@ function App() {
   const audioQueueRef = useRef<string[]>([]);
 
   const [remoteStream, setRemoteStream] = useState<MediaStream|null>(null);
+  // VOICEVOX が返した母音タイムライン（口の形をこれで作る）。英語 TTS では null のまま。
+  const [lipSyncTimeline, setLipSyncTimeline] = useState<LipSyncTimeline | null>(null);
   const [displayedImage, setDisplayedImage] = useState<ImageInfo | null>(null);
   const [avatarMotion, setAvatarMotion] = useState<AvatarMotion | null>(null);
+  const [avatarExpression, setAvatarExpression] = useState<AvatarExpression | null>(null);
   const [motionPhase, setMotionPhase] = useState("none");
+  const [expressionPhase, setExpressionPhase] = useState("none");
+  // アバターモデルと形態（デバッグパネルから切り替える。LLM は制御しない）
+  const [avatarModelId, setAvatarModelId] = useState<string>(DEFAULT_MODEL_ID);
+  const avatarModelConfig = getModelConfig(avatarModelId);
+  const [avatarForm, setAvatarForm] = useState<string>(defaultFormOf(avatarModelConfig));
+  // 画面への収め方（Cubism の投影行列に渡す）。モデルごとの既定値をパネルから微調整できる。
+  const [avatarView, setAvatarView] = useState(avatarModelConfig.view);
   const [panelVisible, setPanelVisible] = useState(true);
   const [ClientLive2D, setClientLive2D] = useState<any>(null);
   useEffect(() => {
     // ✅ クライアントでだけサブコンポーネントを読み込む
+    boot("App マウント");
     if (disableLive2D) return;
-    import("./components/Live2DCanvas.tsx").then(m => setClientLive2D(() => m.default));
+    const t0 = performance.now();
+    boot("Live2DCanvas の動的 import 開始");
+    import("./components/Live2DCanvas.tsx").then((m) => {
+      boot(`Live2DCanvas の動的 import 完了 (${Math.round(performance.now() - t0)}ms)`);
+      setClientLive2D(() => m.default);
+    });
   }, []);
 
   // barge-in ON/OFF
@@ -112,6 +146,69 @@ function App() {
   useEffect(() => {
     messagesRef.current = messages;
   }, [messages]);
+
+  // モデルを切り替えたら形態はそのモデルの初期形態に戻す
+  useEffect(() => {
+    const cfg = getModelConfig(avatarModelId);
+    console.log(`[Avatar] model -> "${avatarModelId}" (${cfg.ja}) settings=${cfg.settingsUrl} form=${defaultFormOf(cfg) || "-"}`);
+    setAvatarForm(defaultFormOf(cfg));
+    setAvatarView(cfg.view);
+  }, [avatarModelId]);
+
+  // ---- アバター デバッグ操作 ----
+  // 同じ値を選び直しても再生し直せるよう、いったん null を通す
+  const pickMotion = (key: AvatarMotion) => {
+    console.log(`[Avatar] panel motion -> "${key}"`, avatarModelConfig.resolveMotion(key, avatarForm));
+    if (avatarMotion === key) {
+      setAvatarMotion(null);
+      window.setTimeout(() => setAvatarMotion(key), 0);
+    } else {
+      setAvatarMotion(key);
+    }
+  };
+  const pickExpression = (key: AvatarExpression) => {
+    console.log(
+      `[Avatar] panel expression -> "${key}"`,
+      avatarModelConfig.resolveExpression?.(key) ??
+        avatarModelConfig.resolveExpressionMotion?.(key, avatarForm),
+    );
+    if (avatarExpression === key) {
+      setAvatarExpression(null);
+      window.setTimeout(() => setAvatarExpression(key), 0);
+    } else {
+      setAvatarExpression(key);
+    }
+  };
+  const resetAvatar = () => {
+    console.log("[Avatar] panel reset");
+    setAvatarMotion(null);
+    setAvatarExpression(null);
+  };
+  /** そのモデル・形態でその表情が表現できるか（できないものはボタンを無効化する） */
+  const isExpressionSupported = (key: AvatarExpression) => {
+    if (key === "neutral") return true;
+    if (avatarModelConfig.resolveExpression) {
+      return avatarModelConfig.resolveExpression(key) !== null;
+    }
+    if (avatarModelConfig.resolveExpressionMotion) {
+      return avatarModelConfig.resolveExpressionMotion(key, avatarForm) !== null;
+    }
+    return false;
+  };
+  /** 同様にモーション。ベンダーがそのモデル・形態に用意していないものは選べない */
+  const isMotionSupported = (key: AvatarMotion) => {
+    if (key === "neutral") return true;
+    return avatarModelConfig.resolveMotion(key, avatarForm) !== null;
+  };
+  const avatarDebugButtonStyle = (active: boolean): React.CSSProperties => ({
+    padding: "4px 10px",
+    borderRadius: 14,
+    border: active ? "1px solid #1565c0" : "1px solid #999",
+    background: active ? "#1e88e5" : "#f5f5f5",
+    color: active ? "#fff" : "#222",
+    cursor: "pointer",
+    fontSize: 13,
+  });
   const setPhaseSafely = (turnId: number, phase: AiPhase) => {
     // 最新ターン以外は無視
     if (turnId !== turnIdRef.current) return;
@@ -143,7 +240,9 @@ function App() {
       streamingAudioRef.current = null;
     }
     ttsStreamStartMsRef.current.clear();
-    
+    // 口の形も音声と一緒に捨てる（残すと止まった口の形が固まる）
+    setLipSyncTimeline(null);
+
     // キュー破棄
     audioQueueRef.current = [];
     playingRef.current = false;
@@ -424,6 +523,11 @@ function App() {
         setAvatarMotion(chatResult.motion);
       }
 
+      // アバター表情
+      if (chatResult.expression) {
+        setAvatarExpression(chatResult.expression);
+      }
+
       // TTS を取りに行く前に speaking 表示（ただしこのターンのみ）
       setPhaseSafely(turnId, "speaking");
 
@@ -479,7 +583,7 @@ function App() {
     }
   };
 
-  const backendChat = async (history: ChatMessage[], signal: AbortSignal): Promise<{ reply: string; image?: ImageInfo; motion?: AvatarMotion }> => {
+  const backendChat = async (history: ChatMessage[], signal: AbortSignal): Promise<{ reply: string; image?: ImageInfo; motion?: AvatarMotion; expression?: AvatarExpression }> => {
     console.log("Sending to backend chat:", history);
     const r = await fetch(`/api/chat`, {
       method: "POST",
@@ -493,7 +597,12 @@ function App() {
     if (!r.ok) throw new Error(await r.text());
     const data = await r.json();
     console.log("Replying to backend chat:", data.reply);
-    return { reply: String(data.reply ?? "").trim(), image: data.image ?? undefined, motion: data.motion ?? undefined };
+    return {
+      reply: String(data.reply ?? "").trim(),
+      image: data.image ?? undefined,
+      motion: data.motion ?? undefined,
+      expression: data.expression ?? undefined,
+    };
   };
 
   const backendTtsToBlobUrl = async (text: string, signal: AbortSignal) => {
@@ -556,6 +665,47 @@ function App() {
             if (!r.ok) throw new Error(await r.text());
             if (!r.body) throw new Error("No stream body");
 
+            // VOICEVOX のモーラ情報（母音タイムライン）。日本語 TTS のときだけ付く。
+            // 無ければ音量のみのリップシンクへフォールバックする。
+            const rawTimeline = r.headers.get("X-Vowel-Timeline");
+            const spans = decodeVowelTimelineHeader(rawTimeline);
+            if (spans) {
+              console.log(
+                `[tts] 母音タイムライン ${spans.length}件 (${spans[spans.length - 1].end.toFixed(2)}秒)`,
+              );
+              setLipSyncTimeline({ timeline: spans, audio });
+            } else {
+              // どこで途切れたのかを一意に言い当てる。
+              // X-Tts-Features は「この Express は転送に対応している」目印なので、
+              // 無ければ Express が古く、あって X-Vowel-Timeline が無ければ VOICEVOX が古い。
+              const hasForwarder = r.headers.get("X-Tts-Features")?.includes("vowel-timeline");
+              const upstream = r.headers.get("X-Tts-Server-Features");
+              const cause = isEnglishConversation
+                ? "英語モードなので OpenAI TTS が使われ、モーラ情報は存在しません（仕様どおり）"
+                : !hasForwarder
+                  ? "Express が古いプロセスです。再起動してください（node server/server.js）。" +
+                    "ポートが埋まっていると起動に失敗して古い方が応答し続けます: ss -lptn 'sport = :8787'"
+                  : !upstream
+                    ? "VOICEVOX サーバが古いプロセスです。再起動してください（cd voicevox && ./run.sh）。" +
+                      "起動時に '[tts_server] 起動完了 features=vowel-timeline' のバナーが出ます。" +
+                      "ポートが埋まっていると uvicorn は Address already in use で起動できず、" +
+                      "古い方が応答し続けます: ss -lptn 'sport = :5005'"
+                    : rawTimeline === null
+                      ? "VOICEVOX は対応版ですがタイムライン生成に失敗しています。" +
+                        "VOICEVOX 側のログのトレースバックを確認してください"
+                      : `ヘッダはあるがデコードに失敗しました (${rawTimeline.length}文字)`;
+              console.warn(
+                `[tts] 母音タイムラインなし → 音量のみのリップシンクになります\n` +
+                  `  原因            : ${cause}\n` +
+                  `  endpoint        : ${endpoint}\n` +
+                  `  X-Tts-Features  : ${r.headers.get("X-Tts-Features") ?? "(なし)"}（Express 側の目印）\n` +
+                  `  X-Tts-Server-Features: ${upstream ?? "(なし)"}（VOICEVOX 側の目印）\n` +
+                  `  X-Vowel-Timeline: ${rawTimeline === null ? "(なし)" : `あり(${rawTimeline.length}文字)`}\n` +
+                  `  応答ヘッダ一覧   : ${[...r.headers.entries()].map(([k]) => k).join(", ")}`,
+              );
+              setLipSyncTimeline(null);
+            }
+
             const reader = r.body.getReader();
 
             const append = (chunk: Uint8Array) =>
@@ -617,6 +767,12 @@ function App() {
             // play は「止めない」：失敗してもストリーム処理は続ける
             audio.play().catch((e) => console.warn("audio.play blocked:", e));
 
+            // captureStream は再生開始直後に渡す。
+            // 以前はダウンロード完了後に渡していたため、音量ベースのリップシンクが
+            // 再生の終盤まで立ち上がらなかった。トラックが未生成でも
+            // Live2DCanvas 側が addtrack を待つので早出しして問題ない。
+            setRemoteStream(getMediaStreamFromAudioElement(audio));
+
             let lastPruneAt = performance.now();
             while (true) {
               if (turnId !== turnIdRef.current) break;
@@ -642,14 +798,13 @@ function App() {
             // 再生終了待ち（任意）
             audio.onended = () => {
               if (turnId === turnIdRef.current) setAiPhase(isMicOn ? "listening" : "idle");
+              // 鳴り終わったら口をモーションに返す
+              setLipSyncTimeline((cur) => (cur?.audio === audio ? null : cur));
               resolve();
             };
             
             // もし endOfStream 後にすぐ終わらない/鳴らない場合の保険（任意）
             // setTimeout(resolve, 30000);
-            console.log(audio)
-            const stream = getMediaStreamFromAudioElement(audio);
-            setRemoteStream(stream);
           } catch (e) {
 	    console.log(e)
             reject(e);
@@ -677,18 +832,23 @@ function App() {
           const audio = new Audio(url);
           currentAudioRef.current = audio;
 
-          audio.onended = () => {
+          const finish = () => {
             URL.revokeObjectURL(url);
             if (currentAudioRef.current === audio) currentAudioRef.current = null;
             resolve();
           };
-          audio.onerror = () => {
-            URL.revokeObjectURL(url);
-            if (currentAudioRef.current === audio) currentAudioRef.current = null;
-            resolve();
-          };
+          audio.onended = finish;
+          audio.onerror = finish;
 
           void audio.play();
+          // この経路（TTS streaming OFF）はストリームを渡していなかったため
+          // リップシンクが成立していなかった。ストリーミング経路と同じく渡す。
+          // 母音タイムラインは付かない（/api/tts は OpenAI）ので音量ベースになる。
+          try {
+            setRemoteStream(getMediaStreamFromAudioElement(audio));
+          } catch (e) {
+            console.warn("captureStream に失敗（リップシンクなしで再生します）:", e);
+          }
         });
       }
     } finally {
@@ -841,7 +1001,21 @@ function App() {
         {/* Live2D アバター（左寄り） */}
         <div style={{ position: "absolute", bottom: 0, left: 0, zIndex: 2 }}>
           {ClientLive2D
-            ? <ClientLive2D audioStream={remoteStream} motion={avatarMotion} onMotionPhaseChange={setMotionPhase} canvasWidth={1100} canvasHeight={1200} left={0}/>
+            ? <ClientLive2D
+                audioStream={remoteStream}
+                lipSync={lipSyncTimeline}
+                modelId={avatarModelId}
+                form={avatarForm}
+                motion={avatarMotion}
+                expression={avatarExpression}
+                onMotionPhaseChange={setMotionPhase}
+                onExpressionPhaseChange={setExpressionPhase}
+                canvasWidth={1100}
+                canvasHeight={1200}
+                viewScale={avatarView.scale}
+                viewOffsetX={avatarView.offsetX}
+                viewOffsetY={avatarView.offsetY}
+              />
             : !disableLive2D && <p style={{ opacity: .7, fontSize: "2rem", padding: 40 }}>Loading Live2D…</p>
           }
         </div>
@@ -1005,6 +1179,137 @@ function App() {
             </label>
           </div>
         </div>
+        {/* ---- アバター（モデル / 表情 / モーション）デバッグ操作 ---- */}
+        <section
+          style={{
+            marginTop: 18,
+            padding: 12,
+            border: "1px solid #aaa",
+            borderRadius: 10,
+            background: "#e4e4e4",
+          }}
+        >
+          <h2 style={{ margin: 0, fontSize: "1rem" }}>
+            {isEnglishConversation ? "Avatar (debug)" : "アバター（デバッグ）"}
+          </h2>
+          <p style={{ margin: "4px 0 10px", fontSize: 12, opacity: 0.7 }}>
+            {isEnglishConversation
+              ? "Motion and expression are normally driven by the LLM; these controls override them manually."
+              : "モーション・表情は通常 LLM が制御します。ここからは手動で上書きできます。"}
+          </p>
+
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 16, marginBottom: 10 }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span>{isEnglishConversation ? "Model" : "モデル"}</span>
+              <select
+                value={avatarModelId}
+                onChange={(e) => setAvatarModelId(e.target.value)}
+              >
+                {AVATAR_MODELS.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {isEnglishConversation ? m.en : m.ja}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            {/* 形態は riken モデルのみ。喜怒哀楽・各ポーズのモーション名が形態ごとに分かれている */}
+            {avatarModelConfig.forms && (
+              <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span>{isEnglishConversation ? "Form" : "形態"}</span>
+                <select
+                  value={avatarForm}
+                  onChange={(e) => {
+                    console.log(`[Avatar] panel form -> "${e.target.value}"`);
+                    setAvatarForm(e.target.value);
+                  }}
+                >
+                  {avatarModelConfig.forms.map((f) => (
+                    <option key={f.key} value={f.key}>
+                      {isEnglishConversation ? f.en : f.ja}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+
+            <button onClick={resetAvatar}>
+              {isEnglishConversation ? "Reset" : "リセット"}
+            </button>
+          </div>
+
+          {/* 表示位置・大きさ。Cubism の投影行列に渡すのでモデルごとに要調整 */}
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 16, marginBottom: 10, fontSize: 13 }}>
+            {([
+              { key: "scale", label: isEnglishConversation ? "Size" : "大きさ", min: 0.2, max: 4, step: 0.05 },
+              { key: "offsetX", label: isEnglishConversation ? "X" : "左右", min: -2, max: 2, step: 0.02 },
+              { key: "offsetY", label: isEnglishConversation ? "Y" : "上下", min: -2, max: 2, step: 0.02 },
+            ] as const).map((c) => (
+              <label key={c.key} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span>{c.label}</span>
+                <input
+                  type="range"
+                  min={c.min}
+                  max={c.max}
+                  step={c.step}
+                  value={avatarView[c.key]}
+                  onChange={(e) =>
+                    setAvatarView((v) => ({ ...v, [c.key]: parseFloat(e.target.value) }))
+                  }
+                />
+                <strong style={{ minWidth: 42 }}>{avatarView[c.key].toFixed(2)}</strong>
+              </label>
+            ))}
+            <button onClick={() => setAvatarView(avatarModelConfig.view)}>
+              {isEnglishConversation ? "Reset view" : "表示リセット"}
+            </button>
+          </div>
+
+          <div style={{ marginBottom: 10 }}>
+            <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 4 }}>
+              {isEnglishConversation ? "Expression" : "表情 (exp)"}
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {AVATAR_EXPRESSIONS.map((e) => {
+                const supported = isExpressionSupported(e.key);
+                return (
+                  <button
+                    key={e.key}
+                    onClick={() => pickExpression(e.key)}
+                    disabled={!supported}
+                    title={supported ? e.key : `${e.key} (not available on this model/form)`}
+                    style={avatarDebugButtonStyle(avatarExpression === e.key)}
+                  >
+                    {isEnglishConversation ? e.en : e.ja}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div>
+            <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 4 }}>
+              {isEnglishConversation ? "Motion" : "モーション"}
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {AVATAR_MOTIONS.map((m) => {
+                const supported = isMotionSupported(m.key);
+                return (
+                  <button
+                    key={m.key}
+                    onClick={() => pickMotion(m.key)}
+                    disabled={!supported}
+                    title={supported ? m.key : `${m.key} (not available on this model/form)`}
+                    style={avatarDebugButtonStyle(avatarMotion === m.key)}
+                  >
+                    {isEnglishConversation ? m.en : m.ja}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </section>
+
         <div style={{ marginTop: 16, minHeight: 32 }}>
           {aiPhase === "listening" && (
             <Status label="Listening…" />
@@ -1020,6 +1325,8 @@ function App() {
 
           <div style={{ marginTop: 6, fontSize: 12, opacity: 0.7 }}>
             Motion: <strong>{avatarMotion ?? "none"}</strong> | Phase: <strong>{motionPhase}</strong>
+            <br />
+            Expression: <strong>{avatarExpression ?? "none"}</strong> | Phase: <strong>{expressionPhase}</strong>
           </div>
         </div>
         {error && (
