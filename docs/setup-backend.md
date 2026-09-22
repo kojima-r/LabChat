@@ -49,7 +49,10 @@ OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx
 node server/server.js
 ```
 
-`Backend listening on http://localhost:8787` と表示されれば起動完了です。
+`Backend listening on http://localhost:8787` と表示されれば起動完了です。`0.0.0.0` で
+待ち受けているため、続けて LAN 側の IP（例: `http://192.168.x.x:8787`）もログに出ます。
+フロントエンドは通常この URL を `/api` プロキシ経由でしか使わないので、直接 LAN に開放する
+必要があるのはブラウザから直接叩いてデバッグする場合だけです。
 
 > **注意**: `.env` に `OPENAI_API_KEY` が設定されていない場合、起動時にエラーで終了します。
 

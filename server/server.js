@@ -7,6 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import os from "node:os";
 
 const app = express();
 app.use(express.json());
@@ -652,6 +653,15 @@ app.post("/api/tts", async (req, res) => {
   }
 });
 
-app.listen(8787, () => {
+// 0.0.0.0 を明示。フロントエンド (Vite) はこのサーバーへ /api を server-side でプロキシ
+// するので、ブラウザが直接ここへ触るのは LAN からのデバッグ用途くらい。
+app.listen(8787, "0.0.0.0", () => {
+  const lanAddrs = Object.values(os.networkInterfaces())
+    .flat()
+    .filter((i) => i && i.family === "IPv4" && !i.internal)
+    .map((i) => i.address);
   console.log("Backend listening on http://localhost:8787");
+  for (const addr of lanAddrs) {
+    console.log(`  (LAN)         http://${addr}:8787`);
+  }
 });

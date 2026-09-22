@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import basicSsl from "@vitejs/plugin-basic-ssl";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -24,8 +25,15 @@ const FRAMEWORK_ENTRIES = [
   "@framework/motion/cubismexpressionmotionmanager",
 ];
 
+// LABCHAT_LAN=1（./run.sh が設定する）のとき、0.0.0.0 で待ち受けて LAN の他端末から
+// アクセスできるようにする。getUserMedia（マイク）はセキュアコンテキストでしか動かず、
+// LAN 越しの http はそれに該当しないため、あわせて自己署名証明書で HTTPS 化する
+// （@vitejs/plugin-basic-ssl。初回アクセス時にブラウザの証明書警告を「詳細設定 →
+// 続行」で通す必要がある）。素の `npm run dev` は従来どおり localhost 限定・HTTP のまま。
+const lanMode = process.env.LABCHAT_LAN === "1";
+
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), ...(lanMode ? [basicSsl()] : [])],
   resolve: {
     alias: { "@framework": resolve(CUBISM_SDK, "Framework/src") },
   },
@@ -35,6 +43,7 @@ export default defineConfig({
     include: FRAMEWORK_ENTRIES,
   },
   server: {
+    host: lanMode ? true : undefined,
     proxy: {
       "/api": {
         target: "http://localhost:8787",
