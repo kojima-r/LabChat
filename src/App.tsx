@@ -30,6 +30,14 @@ type ImageInfo = {
   filename: string;
   title: string;
   description: string;
+  /** 掲載先のジャーナル名・会議名（manifest.json 由来。title とは別に持つ） */
+  ref?: string;
+  /** その掲載年 */
+  year?: number;
+  /** 論文など、掲載先がある画像のリンク（manifest.json 由来） */
+  url?: string;
+  /** その URL の QR コード画像のファイル名（グラフィカルアブストラクトにも焼き込んである） */
+  qr?: string;
 };
 
 type ChatMessage = {
@@ -82,6 +90,13 @@ function App() {
   // VOICEVOX が返した母音タイムライン（口の形をこれで作る）。英語 TTS では null のまま。
   const [lipSyncTimeline, setLipSyncTimeline] = useState<LipSyncTimeline | null>(null);
   const [displayedImage, setDisplayedImage] = useState<ImageInfo | null>(null);
+  // 読み込みに失敗した画像のファイル名。
+  // 以前は onError で DOM の style.display を直接書き換えていたが、React は同じ
+  // <img> 要素を使い回すため、一度失敗すると display:none が残って2枚目以降が
+  // 永久に表示されなくなっていた。React が管理する state で持つ。
+  const [failedImages, setFailedImages] = useState<ReadonlySet<string>>(new Set());
+  // 「閉じてから開く」の待ち行列。displayedImage が null になった次のコミットで表示する。
+  const [pendingImage, setPendingImage] = useState<ImageInfo | null>(null);
   const [avatarMotion, setAvatarMotion] = useState<AvatarMotion | null>(null);
   const [avatarExpression, setAvatarExpression] = useState<AvatarExpression | null>(null);
   const [motionPhase, setMotionPhase] = useState("none");
@@ -146,6 +161,47 @@ function App() {
   useEffect(() => {
     messagesRef.current = messages;
   }, [messages]);
+
+  /**
+   * 画像を表示する。既に何か出ている場合はいったん閉じてから開く。
+   * こうすると <img> が必ず作り直され、前の画像の読み込み状態を持ち越さない。
+   *
+   * 実際の差し替えは下の effect が担う。タイマーで遅延させると
+   * React のスケジューラ（MessageChannel）との前後関係がブラウザ依存になるので、
+   * 「null がコミットされた次のレンダー」という React 自身のサイクルに乗せる。
+   */
+  const showImage = (next: ImageInfo) => {
+    // 明示的に表示し直すときは、過去の失敗は忘れて再挑戦させる
+    setFailedImages((prev) => {
+      if (!prev.has(next.filename)) return prev;
+      const s = new Set(prev);
+      s.delete(next.filename);
+      return s;
+    });
+    setDisplayedImage(null); // まず閉じる
+    setPendingImage(next); // 閉じ終わったら開く
+  };
+
+  /** 画像を閉じる（待っている表示予約も破棄する）。 */
+  const hideImage = () => {
+    setPendingImage(null);
+    setDisplayedImage(null);
+  };
+
+  // 閉じ終わった（displayedImage === null）タイミングで、待っている画像を表示する。
+  // 意図的な 1 回のカスケードレンダー（閉じる→開く）なのでルールを抑止する。
+  useEffect(() => {
+    if (pendingImage && displayedImage === null) {
+      /* eslint-disable react-hooks/set-state-in-effect */
+      setDisplayedImage(pendingImage);
+      setPendingImage(null);
+      /* eslint-enable react-hooks/set-state-in-effect */
+    }
+  }, [pendingImage, displayedImage]);
+
+  const markImageFailed = (filename: string) => {
+    setFailedImages((prev) => (prev.has(filename) ? prev : new Set(prev).add(filename)));
+  };
 
   // モデルを切り替えたら形態はそのモデルの初期形態に戻す
   useEffect(() => {
@@ -513,9 +569,9 @@ function App() {
       if (turnId !== turnIdRef.current) return;
       latencyByTurnRef.current.set(turnId, { ...lat0, chatMs });
 
-      // 画像表示
+      // 画像表示（既に出ているものは閉じてから差し替える）
       if (chatResult.image) {
-        setDisplayedImage(chatResult.image);
+        showImage(chatResult.image);
       }
 
       // アバター動作
@@ -963,7 +1019,9 @@ function App() {
             maxHeight: "80vh",
             zIndex: 1,
           }}>
+            {/* key を付けて画像ごとに <img> を作り直す（前の読み込み状態を持ち越さない） */}
             <img
+              key={displayedImage.filename}
               src={`/images/${displayedImage.filename}`}
               alt={displayedImage.title}
               style={{
@@ -971,14 +1029,78 @@ function App() {
                 maxHeight: "80vh",
                 borderRadius: 12,
                 boxShadow: "0 4px 24px rgba(0,0,0,0.6)",
-                display: "block",
+                display: failedImages.has(displayedImage.filename) ? "none" : "block",
               }}
-              onError={(e) => {
-                (e.target as HTMLImageElement).style.display = "none";
-              }}
+              onError={() => markImageFailed(displayedImage.filename)}
             />
+            {failedImages.has(displayedImage.filename) && (
+              <div
+                style={{
+                  padding: "10px 12px",
+                  background: "rgba(120,0,0,0.7)",
+                  color: "#fff",
+                  borderRadius: 8,
+                  fontSize: 13,
+                }}
+              >
+                画像を読み込めませんでした: /images/{displayedImage.filename}
+              </div>
+            )}
+            {/* タイトル・掲載先（ref / year）・リンクは画像とは別の枠で出す */}
+            {(displayedImage.ref || displayedImage.url) && (
+              <div
+                style={{
+                  marginTop: 8,
+                  padding: "8px 10px",
+                  background: "rgba(0,0,0,0.62)",
+                  borderRadius: 8,
+                }}
+              >
+                <div style={{ color: "#fff", fontSize: 14, fontWeight: 600, lineHeight: 1.4 }}>
+                  {displayedImage.title}
+                </div>
+                {displayedImage.ref && (
+                  <div style={{ marginTop: 6, display: "flex", gap: 6, alignItems: "center" }}>
+                    <span
+                      style={{
+                        padding: "2px 8px",
+                        borderRadius: 10,
+                        background: "#1e88e5",
+                        color: "#fff",
+                        fontSize: 12,
+                        fontWeight: 600,
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {displayedImage.ref}
+                    </span>
+                    {displayedImage.year != null && (
+                      <span style={{ color: "#cfe0f2", fontSize: 12 }}>{displayedImage.year}</span>
+                    )}
+                  </div>
+                )}
+                {displayedImage.url && (
+                  <a
+                    href={displayedImage.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    style={{
+                      display: "block",
+                      marginTop: 6,
+                      color: "#9ec8f0",
+                      fontSize: 11,
+                      textDecoration: "underline",
+                      wordBreak: "break-all",
+                      pointerEvents: "auto",
+                    }}
+                  >
+                    {displayedImage.url}
+                  </a>
+                )}
+              </div>
+            )}
             <button
-              onClick={() => setDisplayedImage(null)}
+              onClick={hideImage}
               style={{
                 position: "absolute",
                 top: 2,
@@ -1373,18 +1495,22 @@ function App() {
                         src={`/images/${m.image.filename}`}
                         alt={m.image.title}
                         style={{
-                          display: "block",
+                          display: failedImages.has(m.image.filename) ? "none" : "block",
                           marginTop: 6,
                           maxWidth: 200,
                           maxHeight: 150,
                           borderRadius: 6,
                           cursor: "pointer",
                         }}
-                        onClick={() => setDisplayedImage(m.image!)}
-                        onError={(e) => {
-                          (e.target as HTMLImageElement).style.display = "none";
-                        }}
+                        onClick={() => showImage(m.image!)}
+                        onError={() => markImageFailed(m.image!.filename)}
                       />
+                    )}
+                    {m.image?.ref && (
+                      <div style={{ fontSize: 11, opacity: 0.85, marginTop: 4 }}>
+                        {m.image.ref}
+                        {m.image.year != null ? ` ${m.image.year}` : ""}
+                      </div>
                     )}
                   </div>
                   

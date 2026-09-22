@@ -65,7 +65,11 @@ const mcpTools = [
     type: "function",
     function: {
       name: "search_articles",
-      description: "論文を検索して候補を返す。",
+      description:
+        "外部の文献データベース（Crossref）を検索して候補を返す。"
+        + "これは最後の手段。まず「利用可能な画像」一覧（当研究室自身の論文）を確認し、"
+        + "そこに該当するものがあれば search_articles ではなく show_image を使うこと。"
+        + "一覧に該当がない場合、またはユーザーが明示的に外部・他者の文献を探すよう求めた場合にのみ呼び出す。",
       parameters: {
         type: "object",
         properties: {
@@ -108,7 +112,63 @@ function runShowImage(args) {
     filename: entry.filename,
     title: entry.title,
     description: entry.description,
+    // 論文などは manifest に掲載先（ref / year）・URL・QR コード画像を持つ。
+    // モデルが口頭で出典やリンクを案内できるよう、ツール結果にも含めて返す。
+    ref: entry.ref,
+    year: entry.year,
+    url: entry.url,
+    qr: entry.qr,
   };
+}
+
+/**
+ * 検索キーワードを manifest の論文（paper-*）に突き合わせる。
+ *
+ * モデルが優先順位を守らず search_articles を呼んでしまった場合の保険。
+ * 手元の論文が当たっていれば、外部検索結果より前に候補として差し込み、
+ * show_image で紹介し直すよう促す（gpt-4.1-nano はプロンプトだけだと揺れる）。
+ * 突き合わせは書誌フィールドのみ。description は長く一般語が多いので使わない
+ * （「深層学習」程度の語で全件マッチしてしまう）。
+ */
+// これだけが当たっても「手元の論文の話」とは見なさない汎用語。
+// 例えば "deep learning" は NeurIPS 論文の英語タイトルに含まれるので、
+// 無関係な深層学習の文献検索まで手元の論文で潰してしまう。
+const GENERIC_TOKENS = new Set([
+  "a", "an", "the", "of", "for", "with", "and", "or", "on", "in", "to", "using", "via",
+  "deep", "learning", "machine", "model", "models", "network", "networks", "neural",
+  "data", "dataset", "method", "methods", "approach", "paper", "papers", "study",
+  "研究", "論文", "手法", "学習", "深層", "モデル", "機械学習",
+]);
+
+function findManifestMatches(keywords) {
+  if (typeof keywords !== "string" || keywords.trim() === "") return [];
+  // 英語は語単位、日本語は空白が無いので文字列ごと部分一致させる
+  const tokens = keywords
+    .toLowerCase()
+    .split(/[\s,、。+/|]+/)
+    .filter((t) => t.length >= 2 && !GENERIC_TOKENS.has(t));
+  if (tokens.length === 0) return [];
+
+  return loadImageManifest()
+    .filter((e) => typeof e.id === "string" && e.id.startsWith("paper-"))
+    .map((e) => {
+      const haystack = [e.id, e.title, e.title_en, e.authors, e.ref, e.year]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      const hits = tokens.filter((t) => haystack.includes(t)).length;
+      return { entry: e, hits };
+    })
+    .filter((m) => m.hits > 0)
+    .sort((a, b) => b.hits - a.hits)
+    .slice(0, 3)
+    .map(({ entry }) => ({
+      id: entry.id,
+      title: entry.title,
+      title_en: entry.title_en,
+      ref: entry.ref,
+      year: entry.year,
+    }));
 }
 
 const imageTools = [
@@ -117,7 +177,10 @@ const imageTools = [
     function: {
       name: "show_image",
       description:
-        "画像を画面に表示する。ユーザーが画像・写真・グラフ・図などの表示を要求したとき、適切な id を選んで呼び出す。呼び出すと画像が画面に表示され、description が返されるのでそれをもとにユーザーに説明する。",
+        "画像を画面に表示する。ユーザーが画像・写真・グラフ・図などの表示を要求したとき、適切な id を選んで呼び出す。"
+        + "呼び出すと画像が画面に表示され、description が返されるのでそれをもとにユーザーに説明する。"
+        + "一覧の paper-* は当研究室自身の論文のグラフィカルアブストラクト。"
+        + "研究内容・業績・論文について聞かれたら、外部検索（search_articles）より先にこのツールで紹介すること。",
       parameters: {
         type: "object",
         properties: {
@@ -398,14 +461,24 @@ app.post("/api/chat", async (req, res) => {
     // 画像マニフェストからタイトル一覧を生成してシステムプロンプトに埋め込む
     const manifest = loadImageManifest();
     const imageListText = manifest.length > 0
-      ? manifest.map((e) => `  - id="${e.id}": ${e.title}`).join("\n")
+      ? manifest
+          .map((e) => {
+            // 論文は掲載先（ジャーナル/会議名と年）を添える
+            const src = e.ref ? ` [${e.ref}${e.year ? ` ${e.year}` : ""}]` : "";
+            // 英語タイトルも添える（英語での問い合わせを手元の論文に当てるため）
+            const en = e.title_en ? ` / ${e.title_en}` : "";
+            return `  - id="${e.id}": ${e.title}${en}${src}`;
+          })
+          .join("\n")
       : "(画像なし)";
 
     const system = {
       role: "system",
       content: useEnglish
         ? "You are a voice assistant that speaks naturally and concisely in English. If necessary, you can call tools (todo_*) in response to user requests."
-          + " Use search_articles if you need to search for references."
+          + " IMPORTANT: the paper-* entries in the image list below are this lab's OWN papers."
+          + " When the user asks about this lab's research, papers, or achievements, introduce them with show_image FIRST — do not call search_articles."
+          + " Use search_articles only when nothing in the list matches, or when the user explicitly asks for other people's / external literature."
           + " due_at must be ISO8601(+09:00) or null."
           + " Use tools to list/complete/delete/change due dates."
           + " When the user asks to show an image, photo, chart, or diagram, call show_image with the appropriate id. Then explain the image using the returned description."
@@ -413,7 +486,9 @@ app.post("/api/chat", async (req, res) => {
           + "\nIMPORTANT: Always call set_avatar_motion to match the conversation mood. Examples: greeting→greeting, explaining→explaining, happy topic→happy, sad topic→sad, surprised→surprised, agreeing→nod, thinking→thinking."
           + "\nIMPORTANT: Also always call set_avatar_expression for the facial expression, which is a separate layer that is held while you speak. Examples: joy→joy, anger→anger, sorrow→sorrow, fun→fun, surprise→surprised, embarrassed→shy, troubled→troubled, otherwise→neutral."
         : "あなたは日本語で自然に短めに話す音声アシスタントです。ユーザーの依頼に応じて必要ならツール(todo_*)を呼び出す。"
-          + " 参考文献の検索が必要なら search_articles を使う。"
+          + " 重要: 下の画像一覧のうち paper-* は当研究室自身の論文である。"
+          + "研究内容・論文・業績について聞かれたら、まず show_image で該当論文を表示して紹介する（search_articles は呼ばない）。"
+          + "一覧に該当がない場合、またはユーザーが明示的に他者・外部の文献を探すよう求めた場合にのみ search_articles を使う。"
           + " due_at は必ず ISO8601(+09:00) か null。"
           + " 一覧/完了/削除/期限変更はツールを使う。"
           + " ユーザーが画像・写真・グラフ・図の表示を求めたら show_image を呼び出し、返された description をもとに説明する。"
@@ -424,6 +499,9 @@ app.post("/api/chat", async (req, res) => {
 
     let convo = [system, ...(messages ?? [])];
     let shownImage = null; // show_image が呼ばれた場合の画像情報
+    // 手元の論文を差し込むのは1リクエストに1回だけ。2回目以降は外部検索に通す
+    // （「他の人の論文も」と言われたときに同じ結果を返し続けないため）
+    let localPapersOffered = false;
     let avatarMotion = null; // set_avatar_motion が呼ばれた場合の動作
     let avatarExpression = null; // set_avatar_expression が呼ばれた場合の表情
 
@@ -474,7 +552,25 @@ app.post("/api/chat", async (req, res) => {
         if (name?.startsWith("todo_")) {
           out = runTodoTool(name, args);
         } else if (name === "search_articles") {
-          out = await callMcpTool(name, args);
+          // 手元の論文が当たっていれば、外部検索をかける前にそれを返す。
+          // マニフェスト優先はまずツール説明とシステムプロンプトで指示しているが、
+          // それでも外部検索が選ばれたときのための保険。
+          const local = localPapersOffered ? [] : findManifestMatches(args?.keywords);
+          if (local.length > 0) {
+            localPapersOffered = true;
+            console.log(`[chat] search_articles("${args?.keywords}") -> manifest 優先 ${local.map((m) => m.id).join(", ")}`);
+            out = {
+              ok: true,
+              source: "local_manifest",
+              note:
+                "この研究室自身の論文が見つかりました。外部検索は行っていません。"
+                + "まず show_image をこの id で呼び出して画面に表示し、返る description をもとに紹介してください。"
+                + "ユーザーがさらに他者・外部の文献を求めた場合は search_articles を呼び直せば外部検索が行われます。",
+              local_papers: local,
+            };
+          } else {
+            out = await callMcpTool(name, args);
+          }
         } else if (name === "show_image") {
           out = runShowImage(args);
           if (out.ok) {
@@ -483,6 +579,10 @@ app.post("/api/chat", async (req, res) => {
               filename: out.filename,
               title: out.title,
               description: out.description,
+              ref: out.ref,
+              year: out.year,
+              url: out.url,
+              qr: out.qr,
             };
           }
         } else if (name === "set_avatar_motion") {
